@@ -16,6 +16,8 @@ authors = [
 
 dependencies = [
   "numpy",
+  "openmm>=7.6",
+  "parmed>=3.4",
 ]
 
 classifiers = [
