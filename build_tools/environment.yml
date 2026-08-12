@@ -1,4 +1,4 @@
-name: template
+name: forcefill
 
 channels:
   - conda-forge
