@@ -31,24 +31,28 @@ def _ambertools_available():
 
 pytestmark = [
     pytest.mark.integration,
-    pytest.mark.skipif(not _ambertools_available(),
-                       reason="AmberTools is not on PATH"),
+    pytest.mark.skipif(not _ambertools_available(), reason="AmberTools is not on PATH"),
 ]
 
 
 def _write_test_pdb(path, broken_gly=False):
     """Methanol as hetero residue LIG; optionally plus a hydrogen-stripped
-    free glycine (standard name, missing atoms -> gets skipped)."""
+    free glycine (standard name, missing atoms -> gets skipped).
+    """
     top = app.Topology()
     chain = top.addChain("A")
     res = top.addResidue("LIG", chain)
     atoms = {}
-    for name, elem in [("C1", element.carbon), ("O1", element.oxygen),
-                       ("H1", element.hydrogen), ("H2", element.hydrogen),
-                       ("H3", element.hydrogen), ("H4", element.hydrogen)]:
+    for name, elem in [
+        ("C1", element.carbon),
+        ("O1", element.oxygen),
+        ("H1", element.hydrogen),
+        ("H2", element.hydrogen),
+        ("H3", element.hydrogen),
+        ("H4", element.hydrogen),
+    ]:
         atoms[name] = top.addAtom(name, elem, res)
-    for a, b in [("C1", "O1"), ("C1", "H1"), ("C1", "H2"), ("C1", "H3"),
-                 ("O1", "H4")]:
+    for a, b in [("C1", "O1"), ("C1", "H1"), ("C1", "H2"), ("C1", "H3"), ("O1", "H4")]:
         top.addBond(atoms[a], atoms[b])
     xyz = [
         (0.000, 0.000, 0.000),
@@ -62,8 +66,12 @@ def _write_test_pdb(path, broken_gly=False):
         chain2 = top.addChain("B")
         gly = top.addResidue("GLY", chain2)
         g = {}
-        for name, elem in [("N", element.nitrogen), ("CA", element.carbon),
-                           ("C", element.carbon), ("O", element.oxygen)]:
+        for name, elem in [
+            ("N", element.nitrogen),
+            ("CA", element.carbon),
+            ("C", element.carbon),
+            ("O", element.oxygen),
+        ]:
             g[name] = top.addAtom(name, elem, gly)
         top.addBond(g["N"], g["CA"])
         top.addBond(g["CA"], g["C"])
@@ -82,8 +90,7 @@ def _write_test_pdb(path, broken_gly=False):
 
 def test_methanol_end_to_end(tmp_path):
     pdb = _write_test_pdb(tmp_path / "in.pdb")
-    result = build_forcefield_xml(pdb, tmp_path / "extras.xml",
-                                  workdir=tmp_path / "wd")
+    result = build_forcefield_xml(pdb, tmp_path / "extras.xml", workdir=tmp_path / "wd")
     assert result.parameterized == ["LIG"]
     assert result.skipped == {}
     assert result.residue_xmls.keys() == {"LIG"}
@@ -92,8 +99,7 @@ def test_methanol_end_to_end(tmp_path):
     assert '<Residue name="LIG">' in xml_text
 
     # The combined XML must work alongside the base force field.
-    ff = app.ForceField("amber14-all.xml", "amber14/tip3p.xml",
-                        result.forcefield_xml)
+    ff = app.ForceField("amber14-all.xml", "amber14/tip3p.xml", result.forcefield_xml)
     ff.createSystem(app.PDBFile(str(pdb)).topology)
 
 
@@ -112,8 +118,7 @@ def test_skipped_residue_still_returns_result(tmp_path):
     # Regression: a skipped residue used to make default validation raise
     # after all the work was done, losing the result.
     pdb = _write_test_pdb(tmp_path / "in.pdb", broken_gly=True)
-    result = build_forcefield_xml(pdb, tmp_path / "extras.xml",
-                                  workdir=tmp_path / "wd")
+    result = build_forcefield_xml(pdb, tmp_path / "extras.xml", workdir=tmp_path / "wd")
     assert result.parameterized == ["LIG"]
     assert "GLY" in result.skipped
     assert Path(result.forcefield_xml).is_file()

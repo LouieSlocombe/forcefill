@@ -20,7 +20,8 @@ from forcefill import nonstandard_ffxml
 
 class StubResidue:
     """Duck-types the Residue surface used by ``_classify_unmatched``:
-    ``.name``, ``.atoms()`` and ``.external_bonds()``."""
+    ``.name``, ``.atoms()`` and ``.external_bonds()``.
+    """
 
     def __init__(self, name, n_atoms=2, external_bonds=0):
         self.name = name
@@ -51,33 +52,25 @@ def test_parameterization_result_defaults():
 
 
 def test_classify_ligand_is_parameterized():
-    to_param, skipped = nonstandard_ffxml._classify_unmatched(
-        [StubResidue("LIG", n_atoms=10)]
-    )
+    to_param, skipped = nonstandard_ffxml._classify_unmatched([StubResidue("LIG", n_atoms=10)])
     assert list(to_param) == ["LIG"]
     assert skipped == {}
 
 
 def test_classify_standard_residue_is_skipped():
-    to_param, skipped = nonstandard_ffxml._classify_unmatched(
-        [StubResidue("ALA", n_atoms=5)]
-    )
+    to_param, skipped = nonstandard_ffxml._classify_unmatched([StubResidue("ALA", n_atoms=5)])
     assert to_param == {}
     assert "repair the structure" in skipped["ALA"]
 
 
 def test_classify_monatomic_is_skipped():
-    to_param, skipped = nonstandard_ffxml._classify_unmatched(
-        [StubResidue("ZN", n_atoms=1)]
-    )
+    to_param, skipped = nonstandard_ffxml._classify_unmatched([StubResidue("ZN", n_atoms=1)])
     assert to_param == {}
     assert "monatomic" in skipped["ZN"]
 
 
 def test_classify_covalently_linked_is_skipped():
-    to_param, skipped = nonstandard_ffxml._classify_unmatched(
-        [StubResidue("PTM", n_atoms=8, external_bonds=1)]
-    )
+    to_param, skipped = nonstandard_ffxml._classify_unmatched([StubResidue("PTM", n_atoms=8, external_bonds=1)])
     assert to_param == {}
     assert "covalently bonded" in skipped["PTM"]
 
@@ -95,9 +88,7 @@ def test_classify_skips_if_any_copy_linked():
     # covalently linked: the name must still be skipped.
     free_big = StubResidue("SUG", n_atoms=12)
     linked_small = StubResidue("SUG", n_atoms=11, external_bonds=1)
-    to_param, skipped = nonstandard_ffxml._classify_unmatched(
-        [free_big, linked_small]
-    )
+    to_param, skipped = nonstandard_ffxml._classify_unmatched([free_big, linked_small])
     assert to_param == {}
     assert "covalently bonded" in skipped["SUG"]
     assert "1 of 2 copies" in skipped["SUG"]
@@ -119,13 +110,11 @@ class _RunRecorder:
 
 def test_run_antechamber_resolves_relative_paths(monkeypatch, tmp_path):
     recorder = _RunRecorder()
-    monkeypatch.setattr(nonstandard_ffxml, "_require_executable",
-                        lambda name: "antechamber")
+    monkeypatch.setattr(nonstandard_ffxml, "_require_executable", lambda name: "antechamber")
     monkeypatch.setattr(nonstandard_ffxml, "_run", recorder)
     monkeypatch.chdir(tmp_path)
 
-    nonstandard_ffxml.run_antechamber("wd/LIG/LIG.pdb", "wd/LIG/LIG.mol2",
-                                      "LIG")
+    nonstandard_ffxml.run_antechamber("wd/LIG/LIG.pdb", "wd/LIG/LIG.mol2", "LIG")
 
     ((cmd, cwd),) = recorder.calls
     in_arg = Path(cmd[cmd.index("-i") + 1])
@@ -137,8 +126,7 @@ def test_run_antechamber_resolves_relative_paths(monkeypatch, tmp_path):
 
 def test_run_parmchk2_resolves_relative_paths(monkeypatch, tmp_path):
     recorder = _RunRecorder()
-    monkeypatch.setattr(nonstandard_ffxml, "_require_executable",
-                        lambda name: "parmchk2")
+    monkeypatch.setattr(nonstandard_ffxml, "_require_executable", lambda name: "parmchk2")
     monkeypatch.setattr(nonstandard_ffxml, "_run", recorder)
     monkeypatch.chdir(tmp_path)
 
@@ -157,7 +145,8 @@ def test_warn_unused_overrides(caplog):
     skipped = {"ZN": "monatomic species - ..."}
     with caplog.at_level(logging.WARNING):
         nonstandard_ffxml._warn_unused_overrides(
-            to_param, skipped,
+            to_param,
+            skipped,
             net_charges={"lig": -1, "ZN": 2, "LIG": 0},
             multiplicities={"XYZ": 3},
         )
@@ -170,6 +159,7 @@ def test_warn_unused_overrides(caplog):
 
 # -- per-residue validation ------------------------------------------------
 
+
 def _methanol_residue():
     from openmm import app
     from openmm.app import element
@@ -178,12 +168,16 @@ def _methanol_residue():
     chain = top.addChain("A")
     res = top.addResidue("LIG", chain)
     atoms = {}
-    for name, elem in [("C1", element.carbon), ("O1", element.oxygen),
-                       ("H1", element.hydrogen), ("H2", element.hydrogen),
-                       ("H3", element.hydrogen), ("H4", element.hydrogen)]:
+    for name, elem in [
+        ("C1", element.carbon),
+        ("O1", element.oxygen),
+        ("H1", element.hydrogen),
+        ("H2", element.hydrogen),
+        ("H3", element.hydrogen),
+        ("H4", element.hydrogen),
+    ]:
         atoms[name] = top.addAtom(name, elem, res)
-    for a, b in [("C1", "O1"), ("C1", "H1"), ("C1", "H2"), ("C1", "H3"),
-                 ("O1", "H4")]:
+    for a, b in [("C1", "O1"), ("C1", "H1"), ("C1", "H2"), ("C1", "H3"), ("O1", "H4")]:
         top.addBond(atoms[a], atoms[b])
     return next(top.residues())
 
@@ -215,13 +209,13 @@ _LIG_TEMPLATE_XML = """<ForceField>
 
 def test_validate_parameterized_residues_ok(tmp_path):
     xml = tmp_path / "lig.xml"
-    xml.write_text(_LIG_TEMPLATE_XML.format(
-        h4_atom='<Atom name="H4" type="XH" charge="0.1"/>',
-        h4_bond='<Bond atomName1="O1" atomName2="H4"/>',
-    ))
-    nonstandard_ffxml._validate_parameterized_residues(
-        {"LIG": _methanol_residue()}, xml, base_forcefield=()
+    xml.write_text(
+        _LIG_TEMPLATE_XML.format(
+            h4_atom='<Atom name="H4" type="XH" charge="0.1"/>',
+            h4_bond='<Bond atomName1="O1" atomName2="H4"/>',
+        )
     )
+    nonstandard_ffxml._validate_parameterized_residues({"LIG": _methanol_residue()}, xml, base_forcefield=())
 
 
 def test_validate_parameterized_residues_detects_mismatch(tmp_path):
@@ -230,6 +224,4 @@ def test_validate_parameterized_residues_detects_mismatch(tmp_path):
     xml = tmp_path / "lig.xml"
     xml.write_text(_LIG_TEMPLATE_XML.format(h4_atom="", h4_bond=""))
     with pytest.raises(RuntimeError, match="residue LIG"):
-        nonstandard_ffxml._validate_parameterized_residues(
-            {"LIG": _methanol_residue()}, xml, base_forcefield=()
-        )
+        nonstandard_ffxml._validate_parameterized_residues({"LIG": _methanol_residue()}, xml, base_forcefield=())

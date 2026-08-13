@@ -1,5 +1,4 @@
-"""
-forcefill.nonstandard_ffxml
+"""forcefill.nonstandard_ffxml
 ===========================
 
 Identify non-standard residues in a PDB file with OpenMM and produce a
@@ -45,11 +44,10 @@ Requirements
 * AmberTools (``antechamber``, ``parmchk2``) on ``PATH`` for step 3, e.g.
   ``conda install -c conda-forge ambertools``
 
-Example
+Example:
 -------
 >>> from forcefill import build_forcefield_xml
->>> result = build_forcefield_xml("complex.pdb", "extras.xml",
-...                               net_charges={"LIG": -1})
+>>> result = build_forcefield_xml("complex.pdb", "extras.xml", net_charges={"LIG": -1})
 >>> result.parameterized
 ['LIG']
 
@@ -58,7 +56,7 @@ then simulate with::
     ff = ForceField("amber14-all.xml", "amber14/tip3p.xml", "extras.xml")
     system = ff.createSystem(pdb.topology, ...)
 
-Notes
+Notes:
 -----
 * Ligands must contain **all explicit hydrogens** with reasonable geometry;
   AM1-BCC charges are meaningless otherwise.
@@ -76,16 +74,16 @@ import shutil
 import subprocess
 import tempfile
 from collections import defaultdict
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Mapping, Optional, Sequence, Union
+from typing import Union
 
 import parmed
+from openmm import app, unit
 from parmed.amber import AmberParameterSet
 from parmed.modeller import ResidueTemplate, ResidueTemplateContainer
 from parmed.openmm import OpenMMParameterSet
-
-from openmm import app, unit
 
 log = logging.getLogger(__name__)
 
@@ -110,13 +108,71 @@ DEFAULT_BASE_FORCEFIELD = ("amber14-all.xml", "amber14/tip3p.xml")
 #: Residue names the base force fields already know. Unmatched residues with
 #: these names are almost always incomplete structures, not new chemistry.
 _STANDARD_RESIDUES = frozenset(
-    """
-    ALA ARG ASN ASP CYS GLN GLU GLY HIS ILE LEU LYS MET PHE PRO SER THR TRP
-    TYR VAL ASH GLH LYN CYX CYM HID HIE HIP ACE NME NMA
-    DA DC DG DT DA3 DA5 DC3 DC5 DG3 DG5 DT3 DT5
-    A C G U A3 A5 C3 C5 G3 G5 U3 U5
-    HOH WAT H2O TIP TIP3 TP3 SPC SOL
-    """.split()
+    [
+        "ALA",
+        "ARG",
+        "ASN",
+        "ASP",
+        "CYS",
+        "GLN",
+        "GLU",
+        "GLY",
+        "HIS",
+        "ILE",
+        "LEU",
+        "LYS",
+        "MET",
+        "PHE",
+        "PRO",
+        "SER",
+        "THR",
+        "TRP",
+        "TYR",
+        "VAL",
+        "ASH",
+        "GLH",
+        "LYN",
+        "CYX",
+        "CYM",
+        "HID",
+        "HIE",
+        "HIP",
+        "ACE",
+        "NME",
+        "NMA",
+        "DA",
+        "DC",
+        "DG",
+        "DT",
+        "DA3",
+        "DA5",
+        "DC3",
+        "DC5",
+        "DG3",
+        "DG5",
+        "DT3",
+        "DT5",
+        "A",
+        "C",
+        "G",
+        "U",
+        "A3",
+        "A5",
+        "C3",
+        "C5",
+        "G3",
+        "G5",
+        "U3",
+        "U5",
+        "HOH",
+        "WAT",
+        "H2O",
+        "TIP",
+        "TIP3",
+        "TP3",
+        "SPC",
+        "SOL",
+    ]
 )
 
 
@@ -126,25 +182,26 @@ class ParameterizationResult:
 
     #: Path to the combined ffxml covering every parameterized residue
     #: (``None`` when nothing needed parameterizing).
-    forcefield_xml: Optional[str]
+    forcefield_xml: str | None
     #: Per-residue ffxml files, keyed by residue name.
-    residue_xmls: Dict[str, str] = field(default_factory=dict)
+    residue_xmls: dict[str, str] = field(default_factory=dict)
     #: Residue names that were successfully parameterized.
-    parameterized: List[str] = field(default_factory=list)
+    parameterized: list[str] = field(default_factory=list)
     #: Residue names that were skipped, mapped to the reason.
-    skipped: Dict[str, str] = field(default_factory=dict)
+    skipped: dict[str, str] = field(default_factory=dict)
     #: Directory holding intermediate files (per-residue PDB/mol2/frcmod).
-    workdir: Optional[str] = None
+    workdir: str | None = None
 
 
 # --------------------------------------------------------------------------
 # Step 1: identification
 # --------------------------------------------------------------------------
 
+
 def find_nonstandard_residues(
     topology: app.Topology,
     base_forcefield: Sequence[str] = DEFAULT_BASE_FORCEFIELD,
-) -> List[app.topology.Residue]:
+) -> list[app.topology.Residue]:
     """Return every residue that *base_forcefield* has no template for.
 
     This is OpenMM's own definition of "non-standard": a residue whose
@@ -158,15 +215,16 @@ def find_nonstandard_residues(
 
 def _classify_unmatched(
     unmatched: Sequence[app.topology.Residue],
-) -> tuple[Dict[str, app.topology.Residue], Dict[str, str]]:
+) -> tuple[dict[str, app.topology.Residue], dict[str, str]]:
     """Split unmatched residues into {name: representative} to parameterize
-    and {name: reason} to skip."""
-    groups: Dict[str, List[app.topology.Residue]] = defaultdict(list)
+    and {name: reason} to skip.
+    """
+    groups: dict[str, list[app.topology.Residue]] = defaultdict(list)
     for res in unmatched:
         groups[res.name.strip()].append(res)
 
-    to_param: Dict[str, app.topology.Residue] = {}
-    skipped: Dict[str, str] = {}
+    to_param: dict[str, app.topology.Residue] = {}
+    skipped: dict[str, str] = {}
     for name, residues in groups.items():
         counts = sorted({sum(1 for _ in r.atoms()) for r in residues})
         rep = max(residues, key=lambda r: sum(1 for _ in r.atoms()))
@@ -175,7 +233,9 @@ def _classify_unmatched(
             log.warning(
                 "Copies of residue %s differ in atom count (%s); "
                 "using the most complete copy (%d atoms) as the template.",
-                name, counts, n_atoms,
+                name,
+                counts,
+                n_atoms,
             )
         if name in _STANDARD_RESIDUES:
             skipped[name] = (
@@ -186,11 +246,9 @@ def _classify_unmatched(
             )
         elif n_atoms == 1:
             skipped[name] = (
-                "monatomic species - use an ion parameter file for it "
-                "(GAFF/antechamber cannot treat bare ions)"
+                "monatomic species - use an ion parameter file for it (GAFF/antechamber cannot treat bare ions)"
             )
-        elif (n_linked := sum(
-                1 for r in residues if any(True for _ in r.external_bonds()))):
+        elif n_linked := sum(1 for r in residues if any(True for _ in r.external_bonds())):
             skipped[name] = (
                 f"covalently bonded to neighbouring residues ({n_linked} of "
                 f"{len(residues)} copies) - a stand-alone GAFF "
@@ -215,27 +273,32 @@ def _warn_unused_overrides(
     charge 0, multiplicity 1), which yields plausible but wrong AM1-BCC
     charges - the worst failure mode.
     """
-    for label, mapping in (("net_charges", net_charges),
-                           ("multiplicities", multiplicities)):
+    for label, mapping in (("net_charges", net_charges), ("multiplicities", multiplicities)):
         for key in mapping:
             if key in to_param:
                 continue
             if key in skipped:
                 log.warning(
-                    "%s[%r] has no effect: residue %s is being skipped, "
-                    "not parameterized.", label, key, key,
+                    "%s[%r] has no effect: residue %s is being skipped, not parameterized.",
+                    label,
+                    key,
+                    key,
                 )
             else:
                 log.warning(
                     "%s[%r] does not match any residue selected for "
                     "parameterization %s; check the spelling and case of "
-                    "the residue name.", label, key, sorted(to_param),
+                    "the residue name.",
+                    label,
+                    key,
+                    sorted(to_param),
                 )
 
 
 # --------------------------------------------------------------------------
 # Step 2: extraction
 # --------------------------------------------------------------------------
+
 
 def _residue_subtopology(residue: app.topology.Residue) -> app.Topology:
     """Copy *residue* (atoms and internal bonds) into a fresh Topology."""
@@ -256,13 +319,15 @@ def extract_residue_to_pdb(
     out_pdb: PathLike,
 ) -> str:
     """Write a single residue (its atoms, internal bonds and coordinates)
-    to *out_pdb* and return the path."""
+    to *out_pdb* and return the path.
+    """
     for atom in residue.atoms():
         if atom.element is None:
             log.warning(
                 "Atom %s in residue %s has no element assigned; antechamber "
                 "may misread it. Check the element columns of the PDB.",
-                atom.name, residue.name,
+                atom.name,
+                residue.name,
             )
     sub_top = _residue_subtopology(residue)
 
@@ -280,6 +345,7 @@ def extract_residue_to_pdb(
 # Step 3: AmberTools wrappers
 # --------------------------------------------------------------------------
 
+
 def _require_executable(name: str) -> str:
     exe = shutil.which(name)
     if exe is None:
@@ -293,9 +359,7 @@ def _require_executable(name: str) -> str:
 
 def _run(cmd: Sequence[str], cwd: PathLike) -> None:
     log.debug("Running: %s (cwd=%s)", " ".join(map(str, cmd)), cwd)
-    proc = subprocess.run(
-        [str(c) for c in cmd], cwd=str(cwd), capture_output=True, text=True
-    )
+    proc = subprocess.run([str(c) for c in cmd], cwd=str(cwd), capture_output=True, text=True)
     if proc.returncode != 0:
         raise RuntimeError(
             f"Command failed with exit code {proc.returncode}:\n"
@@ -326,14 +390,26 @@ def run_antechamber(
     output_mol2 = Path(output_mol2).resolve()
     cmd = [
         exe,
-        "-i", str(input_pdb), "-fi", "pdb",
-        "-o", str(output_mol2), "-fo", "mol2",
-        "-c", charge_method,
-        "-nc", str(net_charge),
-        "-m", str(multiplicity),
-        "-at", atom_type,
-        "-rn", residue_name,
-        "-pf", "y",
+        "-i",
+        str(input_pdb),
+        "-fi",
+        "pdb",
+        "-o",
+        str(output_mol2),
+        "-fo",
+        "mol2",
+        "-c",
+        charge_method,
+        "-nc",
+        str(net_charge),
+        "-m",
+        str(multiplicity),
+        "-at",
+        atom_type,
+        "-rn",
+        residue_name,
+        "-pf",
+        "y",
         *extra_args,
     ]
     _run(cmd, cwd=output_mol2.parent)
@@ -352,9 +428,14 @@ def run_parmchk2(
     output_frcmod = Path(output_frcmod).resolve()
     cmd = [
         exe,
-        "-i", str(input_mol2), "-f", "mol2",
-        "-o", str(output_frcmod),
-        "-s", atom_type,
+        "-i",
+        str(input_mol2),
+        "-f",
+        "mol2",
+        "-o",
+        str(output_frcmod),
+        "-s",
+        atom_type,
     ]
     _run(cmd, cwd=output_frcmod.parent)
     return str(output_frcmod)
@@ -363,7 +444,7 @@ def run_parmchk2(
 def locate_gaff_dat(atom_type: str = "gaff2") -> str:
     """Find gaff.dat / gaff2.dat inside the AmberTools installation."""
     fname = f"{atom_type}.dat"
-    candidates: List[Path] = []
+    candidates: list[Path] = []
     for env in ("AMBERHOME", "CONDA_PREFIX"):
         root = os.environ.get(env)
         if root:
@@ -386,19 +467,15 @@ def locate_gaff_dat(atom_type: str = "gaff2") -> str:
 # Step 4: ParmEd assembly (mol2 templates + Amber parameters -> OpenMM ffxml)
 # --------------------------------------------------------------------------
 
+
 def _load_residue_template(mol2_file: PathLike, name: str) -> ResidueTemplate:
     template = parmed.load_file(str(mol2_file))
     if isinstance(template, ResidueTemplateContainer):
         if len(template) != 1:
-            raise ValueError(
-                f"{mol2_file} contains {len(template)} residues; expected 1."
-            )
+            raise ValueError(f"{mol2_file} contains {len(template)} residues; expected 1.")
         template = template[0]
     if not isinstance(template, ResidueTemplate):
-        raise TypeError(
-            f"{mol2_file} did not load as a ResidueTemplate "
-            f"(got {type(template).__name__})."
-        )
+        raise TypeError(f"{mol2_file} did not load as a ResidueTemplate (got {type(template).__name__}).")
     template.name = name
     return template
 
@@ -424,18 +501,15 @@ def assemble_openmm_ffxml(
     output_xml = Path(output_xml)
     if output_xml.parent != Path(""):
         output_xml.parent.mkdir(parents=True, exist_ok=True)
-    provenance = {
-        "Info": "Generated by forcefill "
-                "(antechamber/parmchk2 + ParmEd)"
-    }
-    omm_params.write(str(output_xml), provenance=provenance,
-                     write_unused=write_unused)
+    provenance = {"Info": "Generated by forcefill (antechamber/parmchk2 + ParmEd)"}
+    omm_params.write(str(output_xml), provenance=provenance, write_unused=write_unused)
     return str(output_xml)
 
 
 # --------------------------------------------------------------------------
 # Step 5: validation
 # --------------------------------------------------------------------------
+
 
 def _validate_parameterized_residues(
     residues: Mapping[str, app.topology.Residue],
@@ -463,8 +537,7 @@ def _validate_parameterized_residues(
                 "The generated template does not match the residue's bond "
                 "graph, or parameters are missing."
             ) from exc
-    log.info("Validation OK: per-residue Systems built for %s from %s",
-             sorted(residues), files)
+    log.info("Validation OK: per-residue Systems built for %s from %s", sorted(residues), files)
 
 
 def validate_forcefield_xml(
@@ -473,7 +546,8 @@ def validate_forcefield_xml(
     base_forcefield: Sequence[str] = DEFAULT_BASE_FORCEFIELD,
 ) -> None:
     """Raise RuntimeError unless base_forcefield + xml_file can build a
-    System for *topology*."""
+    System for *topology*.
+    """
     files = [*base_forcefield, str(xml_file)]
     try:
         forcefield = app.ForceField(*files)
@@ -494,16 +568,17 @@ def validate_forcefield_xml(
 # Main entry point
 # --------------------------------------------------------------------------
 
+
 def build_forcefield_xml(
     pdb_file: PathLike,
     output_xml: PathLike = "nonstandard_ff.xml",
     *,
     base_forcefield: Sequence[str] = DEFAULT_BASE_FORCEFIELD,
-    net_charges: Optional[Mapping[str, int]] = None,
-    multiplicities: Optional[Mapping[str, int]] = None,
+    net_charges: Mapping[str, int] | None = None,
+    multiplicities: Mapping[str, int] | None = None,
     atom_type: str = "gaff2",
     charge_method: str = "bcc",
-    workdir: Optional[PathLike] = None,
+    workdir: PathLike | None = None,
     validate: bool = True,
     antechamber_args: Sequence[str] = (),
 ) -> ParameterizationResult:
@@ -542,7 +617,7 @@ def build_forcefield_xml(
         Extra raw arguments appended to the antechamber command line
         (e.g. ``("-dr", "no")`` to relax acdoctor structure checks).
 
-    Returns
+    Returns:
     -------
     ParameterizationResult
     """
@@ -554,8 +629,7 @@ def build_forcefield_xml(
 
     unmatched = find_nonstandard_residues(topology, base_forcefield)
     if not unmatched:
-        log.info("All residues matched %s - nothing to parameterize.",
-                 list(base_forcefield))
+        log.info("All residues matched %s - nothing to parameterize.", list(base_forcefield))
         return ParameterizationResult(forcefield_xml=None)
 
     to_param, skipped = _classify_unmatched(unmatched)
@@ -563,10 +637,7 @@ def build_forcefield_xml(
         log.warning("Skipping %s: %s", name, reason)
     if not to_param:
         details = "\n".join(f"  {n}: {r}" for n, r in skipped.items())
-        raise RuntimeError(
-            "Unmatched residues were found but none can be "
-            f"auto-parameterized:\n{details}"
-        )
+        raise RuntimeError(f"Unmatched residues were found but none can be auto-parameterized:\n{details}")
     log.info("Residues to parameterize: %s", sorted(to_param))
     _warn_unused_overrides(to_param, skipped, net_charges, multiplicities)
 
@@ -576,47 +647,41 @@ def build_forcefield_xml(
     gaff_dat = locate_gaff_dat(atom_type)
     log.info("Using GAFF parameter database: %s", gaff_dat)
 
-    workdir = Path(workdir).resolve() if workdir is not None else Path(
-        tempfile.mkdtemp(prefix="nonstandard_ff_")
-    )
+    workdir = Path(workdir).resolve() if workdir is not None else Path(tempfile.mkdtemp(prefix="nonstandard_ff_"))
     workdir.mkdir(parents=True, exist_ok=True)
     log.info("Intermediate files in %s", workdir)
 
-    mol2_files: Dict[str, str] = {}
-    frcmod_files: Dict[str, str] = {}
-    residue_xmls: Dict[str, str] = {}
+    mol2_files: dict[str, str] = {}
+    frcmod_files: dict[str, str] = {}
+    residue_xmls: dict[str, str] = {}
     for name in sorted(to_param):
         residue = to_param[name]
         res_dir = workdir / name
         res_dir.mkdir(exist_ok=True)
 
-        n_hydrogens = sum(
-            1 for a in residue.atoms()
-            if a.element is not None and a.element.symbol == "H"
-        )
+        n_hydrogens = sum(1 for a in residue.atoms() if a.element is not None and a.element.symbol == "H")
         n_heavy = sum(1 for _ in residue.atoms()) - n_hydrogens
         if n_hydrogens == 0 and n_heavy > 1:
             log.warning(
                 "Residue %s contains no hydrogens; AM1-BCC charges will be "
                 "wrong unless the molecule really has none. Add explicit "
-                "hydrogens to the ligand before parameterizing.", name,
+                "hydrogens to the ligand before parameterizing.",
+                name,
             )
 
-        res_pdb = extract_residue_to_pdb(
-            positions, residue, res_dir / f"{name}.pdb"
-        )
-        log.info("antechamber: %s (net charge %+d, %s/%s)",
-                 name, net_charges.get(name, 0), atom_type, charge_method)
+        res_pdb = extract_residue_to_pdb(positions, residue, res_dir / f"{name}.pdb")
+        log.info("antechamber: %s (net charge %+d, %s/%s)", name, net_charges.get(name, 0), atom_type, charge_method)
         mol2_files[name] = run_antechamber(
-            res_pdb, res_dir / f"{name}.mol2", name,
+            res_pdb,
+            res_dir / f"{name}.mol2",
+            name,
             net_charge=net_charges.get(name, 0),
             multiplicity=multiplicities.get(name, 1),
-            atom_type=atom_type, charge_method=charge_method,
+            atom_type=atom_type,
+            charge_method=charge_method,
             extra_args=antechamber_args,
         )
-        frcmod_files[name] = run_parmchk2(
-            mol2_files[name], res_dir / f"{name}.frcmod", atom_type=atom_type
-        )
+        frcmod_files[name] = run_parmchk2(mol2_files[name], res_dir / f"{name}.frcmod", atom_type=atom_type)
         # Per-residue template XML (self-contained).
         residue_xmls[name] = assemble_openmm_ffxml(
             {name: mol2_files[name]},
@@ -625,9 +690,7 @@ def build_forcefield_xml(
         )
         log.info("Wrote per-residue XML: %s", residue_xmls[name])
 
-    combined = assemble_openmm_ffxml(
-        mol2_files, [gaff_dat, *frcmod_files.values()], output_xml
-    )
+    combined = assemble_openmm_ffxml(mol2_files, [gaff_dat, *frcmod_files.values()], output_xml)
     log.info("Wrote combined force-field XML: %s", combined)
 
     if validate:
@@ -639,7 +702,8 @@ def build_forcefield_xml(
                 "a System for the whole input cannot succeed. Repair or "
                 "parameterize those, then check with "
                 "validate_forcefield_xml().",
-                len(skipped), ", ".join(sorted(skipped)),
+                len(skipped),
+                ", ".join(sorted(skipped)),
             )
         else:
             validate_forcefield_xml(topology, combined, base_forcefield)
