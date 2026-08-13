@@ -1,0 +1,82 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # This version is pinned in three places that must agree: here, the ruff rev in
+      # .pre-commit-config.yaml, and the `dev` extra in pyproject.toml. ruff's
+      # formatter output can change between releases, so a skew is what lets a
+      # locally-clean tree fail the format gate below.
+      - uses: astral-sh/ruff-action@v3
+        with:
+          version: "0.16.2"
+          args: "check ."
+      - uses: astral-sh/ruff-action@v3
+        with:
+          version: "0.16.2"
+          args: "format --check ."
+
+  tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        # If conda-forge cannot solve ambertools for a new Python yet, drop that
+        # leg to the newest solvable version rather than dropping ambertools.
+        python: ["3.10", "3.13"]
+    defaults:
+      run:
+        shell: bash -el {0}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-file: environment.yml
+          create-args: python=${{ matrix.python }}
+          cache-environment: true
+      - run: pip install -e . --no-deps
+      - run: python -c "import forcefill; print(forcefill.__version__)"
+      # environment.yml includes ambertools, so the integration tests run the real
+      # antechamber/parmchk2/sqm pipeline here — that end-to-end path is the whole
+      # point of the library. The floor is set against the with-AmberTools number
+      # (92% when adopted); raise it as coverage improves — it only ratchets one way.
+      - name: Run tests with coverage
+        run: pytest --cov --cov-report=term --cov-report=xml --cov-fail-under=85
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-py${{ matrix.python }}
+          path: coverage.xml
+
+  # A wheel that imports is not the same as an editable checkout that imports: this
+  # catches packaging mistakes such as a missing package-data entry.
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash -el {0}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-file: environment.yml
+          cache-environment: true
+      - run: python -m build
+      - name: Install the built wheel and import it
+        run: |
+          pip install --force-reinstall --no-deps dist/*.whl
+          cd "$(mktemp -d)"  # import from outside the source tree
+          python -c "import forcefill; print(forcefill.__version__)"
+          python -c "import importlib.resources as r; assert r.files('forcefill').joinpath('py.typed').is_file()"
