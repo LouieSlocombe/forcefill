@@ -1,6 +1,7 @@
 from importlib import metadata as _metadata
 
 from .nonstandard_ffxml import (
+    DEFAULT_AMBERTOOLS_TIMEOUT,
     DEFAULT_BASE_FORCEFIELD,
     ParameterizationResult,
     assemble_openmm_ffxml,
@@ -21,6 +22,7 @@ except _metadata.PackageNotFoundError:  # uninstalled checkout
     __version__ = "0.0.0+unknown"
 
 __all__ = [
+    "DEFAULT_AMBERTOOLS_TIMEOUT",
     "DEFAULT_BASE_FORCEFIELD",
     "ParameterizationResult",
     "assemble_openmm_ffxml",

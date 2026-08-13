@@ -7,6 +7,7 @@ everything here is skipped cleanly when they are not.
 
 import logging
 import shutil
+import sys
 from pathlib import Path
 
 import pytest
@@ -99,11 +100,19 @@ def test_require_executable_raises_when_missing(monkeypatch):
 
 
 class _RunRecorder:
+    """Stands in for _run: records calls and creates the '-o' output file."""
+
     def __init__(self):
         self.calls = []
+        self.kwargs = []
 
-    def __call__(self, cmd, cwd):
-        self.calls.append(([str(c) for c in cmd], Path(cwd)))
+    def __call__(self, cmd, cwd, **kwargs):
+        argv = [str(c) for c in cmd]
+        self.calls.append((argv, Path(cwd)))
+        self.kwargs.append(kwargs)
+        out = Path(argv[argv.index("-o") + 1])
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.touch()
 
 
 def test_run_antechamber_resolves_relative_paths(monkeypatch, tmp_path):
@@ -136,6 +145,67 @@ def test_run_parmchk2_resolves_relative_paths(monkeypatch, tmp_path):
     assert in_arg == (tmp_path / "wd/LIG/LIG.mol2").resolve()
     assert out_arg == (tmp_path / "wd/LIG/LIG.frcmod").resolve()
     assert cwd == (tmp_path / "wd/LIG").resolve()
+
+
+def test_run_antechamber_purge_scratch_flag(monkeypatch, tmp_path):
+    recorder = _RunRecorder()
+    monkeypatch.setattr(nonstandard_ffxml, "_require_executable", lambda name: "antechamber")
+    monkeypatch.setattr(nonstandard_ffxml, "_run", recorder)
+
+    nonstandard_ffxml.run_antechamber(tmp_path / "in.pdb", tmp_path / "out.mol2", "LIG")
+    nonstandard_ffxml.run_antechamber(tmp_path / "in.pdb", tmp_path / "out.mol2", "LIG", purge_scratch=False)
+
+    (cmd_default, _), (cmd_keep, _) = recorder.calls
+    assert cmd_default[cmd_default.index("-pf") + 1] == "y"
+    assert cmd_keep[cmd_keep.index("-pf") + 1] == "n"
+
+
+def test_run_antechamber_missing_output_raises(monkeypatch, tmp_path):
+    monkeypatch.setattr(nonstandard_ffxml, "_require_executable", lambda name: "antechamber")
+    monkeypatch.setattr(nonstandard_ffxml, "_run", lambda cmd, cwd, **kw: None)  # writes nothing
+    with pytest.raises(RuntimeError, match="did not write"):
+        nonstandard_ffxml.run_antechamber(tmp_path / "in.pdb", tmp_path / "out.mol2", "LIG")
+
+
+def test_run_parmchk2_missing_output_raises(monkeypatch, tmp_path):
+    monkeypatch.setattr(nonstandard_ffxml, "_require_executable", lambda name: "parmchk2")
+    monkeypatch.setattr(nonstandard_ffxml, "_run", lambda cmd, cwd, **kw: None)
+    with pytest.raises(RuntimeError, match="did not write"):
+        nonstandard_ffxml.run_parmchk2(tmp_path / "in.mol2", tmp_path / "out.frcmod")
+
+
+def test_run_nonzero_exit_includes_tails_and_hint(tmp_path):
+    script = "import sys; print('OUT-MARKER'); print('ERR-MARKER', file=sys.stderr); sys.exit(3)"
+    with pytest.raises(RuntimeError) as excinfo:
+        nonstandard_ffxml._run([sys.executable, "-c", script], cwd=tmp_path, hint="HINT-TEXT")
+    msg = str(excinfo.value)
+    assert "exit code 3" in msg
+    assert "OUT-MARKER" in msg
+    assert "ERR-MARKER" in msg
+    assert msg.endswith("HINT-TEXT")
+
+
+def test_run_timeout(tmp_path):
+    with pytest.raises(RuntimeError, match="timed out"):
+        nonstandard_ffxml._run([sys.executable, "-c", "import time; time.sleep(30)"], cwd=tmp_path, timeout=0.2)
+
+
+def test_bad_atom_type_rejected_early(tmp_path):
+    with pytest.raises(ValueError, match="atom_type"):
+        nonstandard_ffxml.run_antechamber(tmp_path / "in.pdb", tmp_path / "out.mol2", "LIG", atom_type="gaff3")
+    with pytest.raises(ValueError, match="atom_type"):
+        nonstandard_ffxml.run_parmchk2(tmp_path / "in.mol2", tmp_path / "out.frcmod", atom_type="gaff3")
+    with pytest.raises(ValueError, match="atom_type"):
+        nonstandard_ffxml.locate_gaff_dat("gaff3")
+    with pytest.raises(ValueError, match="atom_type"):
+        forcefill.build_forcefield_xml(tmp_path / "absent.pdb", atom_type="gaff3")
+
+
+def test_bad_charge_method_rejected_early(tmp_path):
+    with pytest.raises(ValueError, match="charge_method"):
+        nonstandard_ffxml.run_antechamber(tmp_path / "in.pdb", tmp_path / "out.mol2", "LIG", charge_method="bbc")
+    with pytest.raises(ValueError, match="charge_method"):
+        forcefill.build_forcefield_xml(tmp_path / "absent.pdb", charge_method="bbc")
 
 
 def test_warn_unused_overrides(caplog):

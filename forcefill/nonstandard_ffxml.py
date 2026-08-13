@@ -79,6 +79,7 @@ from parmed.openmm import OpenMMParameterSet
 log = logging.getLogger(__name__)
 
 __all__ = [
+    "DEFAULT_AMBERTOOLS_TIMEOUT",
     "DEFAULT_BASE_FORCEFIELD",
     "ParameterizationResult",
     "assemble_openmm_ffxml",
@@ -95,6 +96,18 @@ PathLike = str | os.PathLike
 
 #: Base force field used to decide what counts as "non-standard".
 DEFAULT_BASE_FORCEFIELD = ("amber14-all.xml", "amber14/tip3p.xml")
+
+#: Ceiling for a single AmberTools invocation, in seconds. sqm's AM1-BCC on a
+#: large ligand can legitimately take many minutes; nothing should take an hour.
+DEFAULT_AMBERTOOLS_TIMEOUT: float = 3600.0
+
+#: Valid ``atom_type`` values: each names a parameter database ({atom_type}.dat).
+_ATOM_TYPES = ("gaff", "gaff2")
+
+#: Charge methods antechamber accepts (see ``antechamber -L``). The list is
+#: AmberTools-version-dependent (abcg2 needs >= 23); extend it rather than
+#: bypassing the check if your antechamber knows more.
+_CHARGE_METHODS = ("bcc", "abcg2", "gas", "mul", "cm1", "cm2", "esp", "resp", "rc", "wc", "dc")
 
 #: Residue names the base force fields already know. Unmatched residues with
 #: these names are almost always incomplete structures, not new chemistry.
@@ -336,6 +349,12 @@ def extract_residue_to_pdb(
 # --------------------------------------------------------------------------
 
 
+def _check_choice(value: str, valid: Sequence[str], label: str) -> None:
+    """Raise ValueError early for a typo'd option instead of a late, cryptic AmberTools failure."""
+    if value not in valid:
+        raise ValueError(f"{label}={value!r} is not one of {list(valid)}")
+
+
 def _require_executable(name: str) -> str:
     exe = shutil.which(name)
     if exe is None:
@@ -347,18 +366,39 @@ def _require_executable(name: str) -> str:
     return exe
 
 
-def _run(cmd: Sequence[str], cwd: PathLike) -> None:
+def _tail(stream: str | bytes | None, limit: int = 2000) -> str:
+    """Last *limit* characters of captured output; TimeoutExpired may carry bytes or None."""
+    if stream is None:
+        return ""
+    if isinstance(stream, bytes):
+        stream = stream.decode(errors="replace")
+    return stream[-limit:]
+
+
+def _run(
+    cmd: Sequence[str],
+    cwd: PathLike,
+    *,
+    timeout: float | None = DEFAULT_AMBERTOOLS_TIMEOUT,
+    hint: str = "",
+) -> None:
     log.debug("Running: %s (cwd=%s)", " ".join(map(str, cmd)), cwd)
-    proc = subprocess.run([str(c) for c in cmd], cwd=str(cwd), capture_output=True, text=True, check=False)
+    argv = [str(c) for c in cmd]
+    try:
+        proc = subprocess.run(argv, cwd=str(cwd), capture_output=True, text=True, check=False, timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(
+            f"Command timed out after {timeout:g} s:\n"
+            f"  {' '.join(argv)}\n"
+            f"--- stdout (tail) ---\n{_tail(exc.stdout)}\n"
+            f"--- stderr (tail) ---\n{_tail(exc.stderr)}\n" + hint
+        ) from exc
     if proc.returncode != 0:
         raise RuntimeError(
             f"Command failed with exit code {proc.returncode}:\n"
-            f"  {' '.join(map(str, cmd))}\n"
-            f"--- stdout (tail) ---\n{proc.stdout[-2000:]}\n"
-            f"--- stderr (tail) ---\n{proc.stderr[-2000:]}\n"
-            f"For antechamber AM1-BCC failures, inspect 'sqm.out' in {cwd}; "
-            "the most common causes are missing hydrogens or a wrong net "
-            "charge (see the net_charges argument)."
+            f"  {' '.join(argv)}\n"
+            f"--- stdout (tail) ---\n{_tail(proc.stdout)}\n"
+            f"--- stderr (tail) ---\n{_tail(proc.stderr)}\n" + hint
         )
 
 
@@ -371,8 +411,17 @@ def run_antechamber(
     atom_type: str = "gaff2",
     charge_method: str = "bcc",
     extra_args: Sequence[str] = (),
+    purge_scratch: bool = True,
+    timeout: float | None = DEFAULT_AMBERTOOLS_TIMEOUT,
 ) -> str:
-    """Assign atom types and partial charges with antechamber -> mol2."""
+    """Assign atom types and partial charges with antechamber -> mol2.
+
+    ``purge_scratch=False`` keeps antechamber's ANTECHAMBER_*/sqm scratch files
+    after a successful run (they always survive a failed one), which is the way
+    to audit suspicious charges. ``timeout`` is in seconds.
+    """
+    _check_choice(atom_type, _ATOM_TYPES, "atom_type")
+    _check_choice(charge_method, _CHARGE_METHODS, "charge_method")
     exe = _require_executable("antechamber")
     # antechamber runs with cwd set to the output directory (it scatters
     # scratch files there); resolve both paths so relative ones survive.
@@ -399,10 +448,23 @@ def run_antechamber(
         "-rn",
         residue_name,
         "-pf",
-        "y",
+        "y" if purge_scratch else "n",
         *extra_args,
     ]
-    _run(cmd, cwd=output_mol2.parent)
+    hint = (
+        f"For antechamber AM1-BCC failures, inspect 'sqm.out' in {output_mol2.parent}; "
+        "the most common causes are missing hydrogens or a wrong net "
+        "charge (see the net_charges argument)."
+    )
+    _run(cmd, cwd=output_mol2.parent, timeout=timeout, hint=hint)
+    if not output_mol2.is_file():
+        raise RuntimeError(
+            f"antechamber exited 0 but did not write {output_mol2}. "
+            "acdoctor may have rejected the structure or the input may be "
+            "malformed; re-run with purge_scratch=False and inspect the "
+            f"scratch files in {output_mol2.parent} "
+            "(extra_args=('-dr', 'no') relaxes the acdoctor checks)."
+        )
     return str(output_mol2)
 
 
@@ -410,8 +472,10 @@ def run_parmchk2(
     input_mol2: PathLike,
     output_frcmod: PathLike,
     atom_type: str = "gaff2",
+    timeout: float | None = DEFAULT_AMBERTOOLS_TIMEOUT,
 ) -> str:
     """Generate missing GAFF parameters with parmchk2 -> frcmod."""
+    _check_choice(atom_type, _ATOM_TYPES, "atom_type")
     exe = _require_executable("parmchk2")
     # Same cwd game as run_antechamber: resolve so relative paths survive.
     input_mol2 = Path(input_mol2).resolve()
@@ -427,12 +491,15 @@ def run_parmchk2(
         "-s",
         atom_type,
     ]
-    _run(cmd, cwd=output_frcmod.parent)
+    _run(cmd, cwd=output_frcmod.parent, timeout=timeout)
+    if not output_frcmod.is_file():
+        raise RuntimeError(f"parmchk2 exited 0 but did not write {output_frcmod}.")
     return str(output_frcmod)
 
 
 def locate_gaff_dat(atom_type: str = "gaff2") -> str:
     """Find gaff.dat / gaff2.dat inside the AmberTools installation."""
+    _check_choice(atom_type, _ATOM_TYPES, "atom_type")
     fname = f"{atom_type}.dat"
     candidates: list[Path] = []
     for env in ("AMBERHOME", "CONDA_PREFIX"):
@@ -569,6 +636,7 @@ def build_forcefield_xml(
     workdir: PathLike | None = None,
     validate: bool = True,
     antechamber_args: Sequence[str] = (),
+    timeout: float | None = DEFAULT_AMBERTOOLS_TIMEOUT,
 ) -> ParameterizationResult:
     """Identify non-standard residues in *pdb_file* and build an OpenMM force-field XML for them.
 
@@ -596,10 +664,14 @@ def build_forcefield_xml(
         antechamber_args: Extra raw arguments appended to the antechamber
             command line (e.g. ``("-dr", "no")`` to relax acdoctor structure
             checks).
+        timeout: Per-invocation ceiling in seconds for each antechamber /
+            parmchk2 run (None disables it). Default one hour.
 
     Returns:
         ParameterizationResult
     """
+    _check_choice(atom_type, _ATOM_TYPES, "atom_type")
+    _check_choice(charge_method, _CHARGE_METHODS, "charge_method")
     net_charges = dict(net_charges or {})
     multiplicities = dict(multiplicities or {})
 
@@ -659,8 +731,11 @@ def build_forcefield_xml(
             atom_type=atom_type,
             charge_method=charge_method,
             extra_args=antechamber_args,
+            timeout=timeout,
         )
-        frcmod_files[name] = run_parmchk2(mol2_files[name], res_dir / f"{name}.frcmod", atom_type=atom_type)
+        frcmod_files[name] = run_parmchk2(
+            mol2_files[name], res_dir / f"{name}.frcmod", atom_type=atom_type, timeout=timeout
+        )
         # Per-residue template XML (self-contained).
         residue_xmls[name] = assemble_openmm_ffxml(
             {name: mol2_files[name]},

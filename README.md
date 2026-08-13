@@ -74,10 +74,10 @@ from forcefill import build_forcefield_xml
 result = build_forcefield_xml(
     "complex.pdb",
     "extras.xml",
-    net_charges={"LIG": -1},   # essential for sensible AM1-BCC charges
+    net_charges={"LIG": -1},  # essential for sensible AM1-BCC charges
 )
-print(result.parameterized)    # ['LIG']
-print(result.skipped)          # {'ZN': 'monatomic species - ...'}
+print(result.parameterized)  # ['LIG']
+print(result.skipped)  # {'ZN': 'monatomic species - ...'}
 ```
 
 then simulate with:
