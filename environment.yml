@@ -1,0 +1,23 @@
+# Development / runtime environment for forcefill.
+#
+#   conda env create -f environment.yml
+#   conda activate forcefill
+#   pip install -e . --no-deps
+#
+# AmberTools (antechamber, parmchk2 and the GAFF data files) is conda-only,
+# which is why conda-forge is the recommended install route rather than pip.
+name: forcefill
+
+channels:
+  - conda-forge
+  - nodefaults
+
+dependencies:
+  - python>=3.10
+  - pip
+  - openmm
+  - parmed
+  - ambertools
+  - pytest
+  - pytest-cov
+  - python-build
