@@ -1,47 +1,67 @@
 [build-system]
-requires = ["setuptools>=61", "wheel"]
+requires = ["setuptools >= 77"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "forcefill"
 version = "0.0.0"
-description = "forcefill"
-readme = { file = "README.md", content-type = "text/markdown" }
-requires-python = ">=3.14"
-license = { text = "MIT" }
-
+description = "Parameterize non-standard PDB residues (ligands, cofactors) into OpenMM force-field XML with AmberTools GAFF/AM1-BCC and ParmEd"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
 authors = [
-  { name = "Louie Slocombe", email = "louies@hotmail.co.uk" },
+    { name = "Louie Slocombe", email = "louies@hotmail.co.uk" },
 ]
-
+requires-python = ">= 3.10"
 dependencies = [
-  "numpy",
-  "openmm>=7.6",
-  "parmed>=3.4",
+    # Both are required at import time. conda-forge is the recommended install
+    # route for the full stack: the AmberTools executables (antechamber,
+    # parmchk2) that do the actual parameterization are conda-only.
+    "openmm >= 7.6",
+    "parmed >= 3.4",
 ]
-
 classifiers = [
-  "Programming Language :: Python :: 3",
-  "License :: OSI Approved :: MIT License",
-  "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Chemistry",
+    "Operating System :: OS Independent",
 ]
 
 [project.optional-dependencies]
-dev = [
-  "pytest",
-  "pytest-cov",
-]
+test = ["pytest", "pytest-cov"]
+# Pinned, not floating: ruff's formatter output can shift between releases, so the
+# version here must match .pre-commit-config.yaml and .github/workflows/ci.yml or
+# a locally-clean tree can still fail the CI format gate.
+dev = ["ruff == 0.16.2", "pre-commit"]
 
 [project.urls]
 Homepage = "https://github.com/LouieSlocombe/forcefill"
 Repository = "https://github.com/LouieSlocombe/forcefill"
 
-[tool.setuptools]
-include-package-data = true
-
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["forcefill", "forcefill.*"]
+include = ["forcefill*"]
 
+# Non-Python files shipped in wheels: the PEP 561 typing marker. Test fixtures
+# stay in the source repository under tests/data/ — run the suite from a checkout.
 [tool.setuptools.package-data]
-"forcefill" = ["data/*"]
+forcefill = ["py.typed"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+markers = [
+    "integration: runs the real AmberTools executables (antechamber/parmchk2); deselect with -m 'not integration'",
+]
+
+# Coverage is measured with `pytest --cov`; the config lives here so local runs
+# and CI report the same numbers. The tests live outside the package, so they
+# fall outside `source` and need no explicit omit.
+[tool.coverage.run]
+source = ["forcefill"]
+
+[tool.coverage.report]
+exclude_also = [
+    "if TYPE_CHECKING:",
+]

@@ -1,3 +1,5 @@
+from importlib import metadata as _metadata
+
 from .nonstandard_ffxml import (
     DEFAULT_BASE_FORCEFIELD,
     ParameterizationResult,
@@ -11,7 +13,12 @@ from .nonstandard_ffxml import (
     validate_forcefield_xml,
 )
 
-__version__ = "0.0.0"
+# Single source of truth for the version is pyproject.toml; installed metadata
+# carries it. The fallback covers running from an uninstalled checkout.
+try:
+    __version__ = _metadata.version("forcefill")
+except _metadata.PackageNotFoundError:  # uninstalled checkout
+    __version__ = "0.0.0+unknown"
 
 __all__ = [
     "DEFAULT_BASE_FORCEFIELD",

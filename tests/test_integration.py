@@ -29,9 +29,11 @@ def _ambertools_available():
     return True
 
 
-pytestmark = pytest.mark.skipif(
-    not _ambertools_available(), reason="AmberTools is not on PATH"
-)
+pytestmark = [
+    pytest.mark.integration,
+    pytest.mark.skipif(not _ambertools_available(),
+                       reason="AmberTools is not on PATH"),
+]
 
 
 def _write_test_pdb(path, broken_gly=False):
