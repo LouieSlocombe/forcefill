@@ -631,6 +631,56 @@ def validate_forcefield_xml(
 # --------------------------------------------------------------------------
 
 
+def _parameterize_one_residue(
+    name: str,
+    residue: app.topology.Residue,
+    positions: unit.Quantity,
+    res_dir: Path,
+    *,
+    gaff_dat: str,
+    net_charge: int,
+    multiplicity: int,
+    atom_type: str,
+    charge_method: str,
+    antechamber_args: Sequence[str],
+    timeout: float | None,
+) -> tuple[str, str, str]:
+    """Run one residue through extract -> antechamber -> parmchk2 -> per-residue XML.
+
+    Returns ``(mol2_path, frcmod_path, per_residue_xml_path)``, all inside *res_dir*.
+    """
+    res_dir.mkdir(parents=True, exist_ok=True)
+
+    n_hydrogens = sum(1 for a in residue.atoms() if a.element is not None and a.element.symbol == "H")
+    n_heavy = sum(1 for _ in residue.atoms()) - n_hydrogens
+    if n_hydrogens == 0 and n_heavy > 1:
+        log.warning(
+            "Residue %s contains no hydrogens; AM1-BCC charges will be "
+            "wrong unless the molecule really has none. Add explicit "
+            "hydrogens to the ligand before parameterizing.",
+            name,
+        )
+
+    res_pdb = extract_residue_to_pdb(positions, residue, res_dir / f"{name}.pdb")
+    log.info("antechamber: %s (net charge %+d, %s/%s)", name, net_charge, atom_type, charge_method)
+    mol2 = run_antechamber(
+        res_pdb,
+        res_dir / f"{name}.mol2",
+        name,
+        net_charge=net_charge,
+        multiplicity=multiplicity,
+        atom_type=atom_type,
+        charge_method=charge_method,
+        extra_args=antechamber_args,
+        timeout=timeout,
+    )
+    frcmod = run_parmchk2(mol2, res_dir / f"{name}.frcmod", atom_type=atom_type, timeout=timeout)
+    # Per-residue template XML (self-contained).
+    xml = assemble_openmm_ffxml({name: mol2}, [gaff_dat, frcmod], res_dir / f"{name}.xml")
+    log.info("Wrote per-residue XML: %s", xml)
+    return mol2, frcmod, xml
+
+
 def build_forcefield_xml(
     pdb_file: PathLike,
     output_xml: PathLike = "nonstandard_ff.xml",
@@ -713,43 +763,19 @@ def build_forcefield_xml(
     frcmod_files: dict[str, str] = {}
     residue_xmls: dict[str, str] = {}
     for name in sorted(to_param):
-        residue = to_param[name]
-        res_dir = workdir / name
-        res_dir.mkdir(exist_ok=True)
-
-        n_hydrogens = sum(1 for a in residue.atoms() if a.element is not None and a.element.symbol == "H")
-        n_heavy = sum(1 for _ in residue.atoms()) - n_hydrogens
-        if n_hydrogens == 0 and n_heavy > 1:
-            log.warning(
-                "Residue %s contains no hydrogens; AM1-BCC charges will be "
-                "wrong unless the molecule really has none. Add explicit "
-                "hydrogens to the ligand before parameterizing.",
-                name,
-            )
-
-        res_pdb = extract_residue_to_pdb(positions, residue, res_dir / f"{name}.pdb")
-        log.info("antechamber: %s (net charge %+d, %s/%s)", name, net_charges.get(name, 0), atom_type, charge_method)
-        mol2_files[name] = run_antechamber(
-            res_pdb,
-            res_dir / f"{name}.mol2",
+        mol2_files[name], frcmod_files[name], residue_xmls[name] = _parameterize_one_residue(
             name,
+            to_param[name],
+            positions,
+            workdir / name,
+            gaff_dat=gaff_dat,
             net_charge=net_charges.get(name, 0),
             multiplicity=multiplicities.get(name, 1),
             atom_type=atom_type,
             charge_method=charge_method,
-            extra_args=antechamber_args,
+            antechamber_args=antechamber_args,
             timeout=timeout,
         )
-        frcmod_files[name] = run_parmchk2(
-            mol2_files[name], res_dir / f"{name}.frcmod", atom_type=atom_type, timeout=timeout
-        )
-        # Per-residue template XML (self-contained).
-        residue_xmls[name] = assemble_openmm_ffxml(
-            {name: mol2_files[name]},
-            [gaff_dat, frcmod_files[name]],
-            res_dir / f"{name}.xml",
-        )
-        log.info("Wrote per-residue XML: %s", residue_xmls[name])
 
     combined = assemble_openmm_ffxml(mol2_files, [gaff_dat, *frcmod_files.values()], output_xml)
     log.info("Wrote combined force-field XML: %s", combined)
