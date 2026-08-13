@@ -31,7 +31,9 @@ Pipeline:
     5. The combined XML is validated by building an ``openmm.System`` from
        ``base force field + new XML`` for each parameterized residue on its
        own; when no residues were skipped, a System for the full input
-       topology is built as well.
+       topology is built as well. With ``minimize=True`` each of those is also
+       energy-minimized, which catches unphysical parameters that still build
+       a perfectly valid System.
 
 Requirements:
     * ``openmm >= 7.6`` and ``parmed >= 3.4`` (``pip install openmm parmed``)
@@ -61,6 +63,7 @@ Notes:
 from __future__ import annotations
 
 import logging
+import math
 import os
 import shutil
 import subprocess
@@ -69,9 +72,10 @@ from collections import defaultdict
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 import parmed
-from openmm import app, unit
+from openmm import Context, LocalEnergyMinimizer, Platform, VerletIntegrator, app, unit
 from parmed.amber import AmberParameterSet
 from parmed.modeller import ResidueTemplate, ResidueTemplateContainer
 from parmed.openmm import OpenMMParameterSet
@@ -81,12 +85,16 @@ log = logging.getLogger(__name__)
 __all__ = [
     "DEFAULT_AMBERTOOLS_TIMEOUT",
     "DEFAULT_BASE_FORCEFIELD",
+    "DEFAULT_MINIMIZATION_PLATFORM",
+    "DEFAULT_MINIMIZATION_TOLERANCE",
+    "MinimizationResult",
     "ParameterizationResult",
     "assemble_openmm_ffxml",
     "build_forcefield_xml",
     "extract_residue_to_pdb",
     "find_nonstandard_residues",
     "locate_gaff_dat",
+    "minimize_with_forcefield_xml",
     "run_antechamber",
     "run_parmchk2",
     "validate_forcefield_xml",
@@ -100,6 +108,17 @@ DEFAULT_BASE_FORCEFIELD = ("amber14-all.xml", "amber14/tip3p.xml")
 #: Ceiling for a single AmberTools invocation, in seconds. sqm's AM1-BCC on a
 #: large ligand can legitimately take many minutes; nothing should take an hour.
 DEFAULT_AMBERTOOLS_TIMEOUT: float = 3600.0
+
+#: Platform used for the minimization checks. Pinned rather than left to OpenMM,
+#: which picks the fastest available one - forcefill must never take a GPU the
+#: caller wanted for something else.
+DEFAULT_MINIMIZATION_PLATFORM = "CPU"
+
+#: Minimizer convergence target on the RMS force, in kJ/mol/nm (OpenMM's own default).
+DEFAULT_MINIMIZATION_TOLERANCE: float = 10.0
+
+#: Unit the reported forces are converted to.
+_FORCE_UNIT = unit.kilojoule_per_mole / unit.nanometer
 
 #: Valid ``atom_type`` values: each names a parameter database ({atom_type}.dat).
 _ATOM_TYPES = ("gaff", "gaff2")
@@ -190,6 +209,30 @@ _STANDARD_RESIDUES = frozenset(
 
 
 @dataclass
+class MinimizationResult:
+    """What one :func:`minimize_with_forcefield_xml` run measured.
+
+    Plain floats rather than ``unit.Quantity``: energies in kJ/mol, forces in
+    kJ/mol/nm. A Quantity cannot be ``math.isfinite``-checked or ``%``-formatted,
+    which is all this object is ever used for.
+    """
+
+    #: Number of atoms in the minimized topology.
+    n_atoms: int
+    #: Potential energy of the input coordinates.
+    initial_energy: float
+    #: Potential energy after minimizing.
+    final_energy: float
+    #: Largest per-atom force magnitude after minimizing.
+    max_force: float
+
+    @property
+    def energy_change(self) -> float:
+        """Final minus initial energy; negative when the minimizer did its job."""
+        return self.final_energy - self.initial_energy
+
+
+@dataclass
 class ParameterizationResult:
     """What :func:`build_forcefield_xml` produced."""
 
@@ -206,6 +249,12 @@ class ParameterizationResult:
     #: Directory holding intermediate files (per-residue PDB/mol2/frcmod);
     #: ``None`` when nothing was parameterized or after ``cleanup=True``.
     workdir: str | None = None
+    #: Per-residue vacuum minimizations, keyed by residue name. Empty unless
+    #: ``minimize=True``.
+    minimizations: dict[str, MinimizationResult] = field(default_factory=dict)
+    #: Minimization of the whole input topology. ``None`` unless
+    #: ``minimize=True`` *and* no residue was skipped.
+    full_minimization: MinimizationResult | None = None
 
 
 # --------------------------------------------------------------------------
@@ -334,6 +383,18 @@ def _residue_subtopology(residue: app.topology.Residue) -> app.Topology:
     return sub_top
 
 
+def _residue_positions(positions: unit.Quantity, residue: app.topology.Residue) -> unit.Quantity:
+    """Slice *positions* (indexed by global atom index) down to *residue*, in its own atom order.
+
+    The order must match :func:`_residue_subtopology`, which iterates the same
+    ``residue.atoms()``.
+    """
+    return unit.Quantity(
+        [positions[a.index].value_in_unit(unit.nanometer) for a in residue.atoms()],
+        unit.nanometer,
+    )
+
+
 def extract_residue_to_pdb(
     positions: unit.Quantity,
     residue: app.topology.Residue,
@@ -350,13 +411,9 @@ def extract_residue_to_pdb(
             )
     sub_top = _residue_subtopology(residue)
 
-    coords = unit.Quantity(
-        [positions[a.index].value_in_unit(unit.nanometer) for a in residue.atoms()],
-        unit.nanometer,
-    )
     out_pdb = Path(out_pdb)
     with open(out_pdb, "w") as fh:
-        app.PDBFile.writeFile(sub_top, coords, fh)
+        app.PDBFile.writeFile(sub_top, _residue_positions(positions, residue), fh)
     return str(out_pdb)
 
 
@@ -591,7 +648,7 @@ def assemble_openmm_ffxml(
 
 
 # --------------------------------------------------------------------------
-# Step 5: validation
+# Step 5: validation and minimization
 # --------------------------------------------------------------------------
 
 
@@ -653,6 +710,176 @@ def validate_forcefield_xml(
             "Pass validate=False to skip this check."
         ) from exc
     log.info("Validation OK: System built from %s", files)
+
+
+class _NonFiniteEnergyError(RuntimeError):
+    """Raised by the finite-energy check so it passes through the OpenMM error wrapper unchanged."""
+
+
+def _describe_topology(topology: app.Topology) -> str:
+    """Name *topology* for an error message: a lone residue by name, anything else by size."""
+    n_atoms = topology.getNumAtoms()
+    n_residues = topology.getNumResidues()
+    if n_residues == 1:
+        return f"residue {next(topology.residues()).name} ({n_atoms} atoms)"
+    return f"the topology ({n_atoms} atoms, {n_residues} residues)"
+
+
+def minimize_with_forcefield_xml(
+    topology: app.Topology,
+    positions: unit.Quantity,
+    xml_file: PathLike,
+    base_forcefield: Sequence[str] = DEFAULT_BASE_FORCEFIELD,
+    *,
+    forcefield: app.ForceField | None = None,
+    max_iterations: int = 100,
+    tolerance: float = DEFAULT_MINIMIZATION_TOLERANCE,
+    nonbonded_method: Any = app.NoCutoff,
+    constraints: Any = None,
+    rigid_water: bool = False,
+    platform_name: str = DEFAULT_MINIMIZATION_PLATFORM,
+) -> MinimizationResult:
+    """Energy-minimize *topology* with ``base_forcefield + xml_file`` and report what happened.
+
+    This is the check :func:`validate_forcefield_xml` cannot make. Building a
+    System only proves the templates match and no parameter is missing; a NaN
+    charge, a zero force constant or a broken angle term all survive it and
+    surface later as an exploding simulation. Computing an energy and taking a
+    few minimizer steps catches them here.
+
+    Raises RuntimeError if the XML will not load, the System will not build, or
+    the potential energy is not finite before or after minimizing. The reported
+    ``max_force`` and ``energy_change`` are diagnostics, not pass/fail criteria -
+    what counts as converged depends on the system.
+
+    Args:
+        topology: Structure to minimize.
+        positions: Coordinates for *topology*, indexed by global atom index and
+            in the same order as ``topology.atoms()``.
+        xml_file: The generated force-field XML to load on top of
+            *base_forcefield*.
+        base_forcefield: ffxml files loaded first, e.g. the standard Amber set.
+        forcefield: A pre-built ForceField, which must have been constructed
+            from ``base_forcefield + xml_file``; skips re-parsing the XML files.
+        max_iterations: Minimizer iteration ceiling. The default is a sanity
+            check, not convergence - pass 0 to run until *tolerance* is met.
+        tolerance: Convergence target in kJ/mol/nm, applied to the RMS over all
+            force *components*, so it is not comparable to the per-atom
+            ``max_force`` reported back. Must be positive: OpenMM accepts a
+            negative tolerance and then silently minimizes nothing.
+        nonbonded_method: ``createSystem`` nonbonded method. The default,
+            ``app.NoCutoff``, is exact but O(N^2); pass ``app.PME`` for a
+            solvated periodic box.
+        constraints: ``createSystem`` constraints. Deliberately ``None`` rather
+            than ``app.HBonds``: constraining bonds is exactly what would hide
+            a bad bond parameter.
+        rigid_water: Deliberately False, unlike OpenMM's default. With
+            constraints present ``getForces`` returns the unconstrained forces,
+            which makes the reported ``max_force`` a meaningless residual.
+        platform_name: OpenMM platform. Pinned to CPU by default so this check
+            cannot take a GPU the caller wanted for something else.
+
+    Returns:
+        MinimizationResult
+    """
+    if tolerance <= 0:
+        raise ValueError(f"tolerance={tolerance!r} must be positive; OpenMM silently skips minimization otherwise.")
+    if max_iterations < 0:
+        raise ValueError(f"max_iterations={max_iterations!r} must be >= 0 (0 means 'run until converged').")
+
+    files = [*base_forcefield, str(xml_file)]
+    subject = _describe_topology(topology)
+    try:
+        if forcefield is None:
+            forcefield = app.ForceField(*files)
+        system = forcefield.createSystem(
+            topology,
+            nonbondedMethod=nonbonded_method,
+            constraints=constraints,
+            rigidWater=rigid_water,
+        )
+        # The integrator is never stepped; a Context just requires one.
+        context = Context(system, VerletIntegrator(0.001 * unit.picoseconds), Platform.getPlatformByName(platform_name))
+        context.setPositions(positions)
+
+        initial = context.getState(getEnergy=True).getPotentialEnergy().value_in_unit(unit.kilojoule_per_mole)
+        _require_finite_energy(initial, "before minimizing", subject, files)
+
+        LocalEnergyMinimizer.minimize(context, tolerance, max_iterations)
+
+        state = context.getState(getEnergy=True, getForces=True)
+        final = state.getPotentialEnergy().value_in_unit(unit.kilojoule_per_mole)
+        _require_finite_energy(final, "after minimizing", subject, files)
+        forces = state.getForces().value_in_unit(_FORCE_UNIT)
+    except _NonFiniteEnergyError:
+        raise
+    except Exception as exc:
+        raise RuntimeError(
+            f"Minimization failed: could not minimize {subject} with {files}.\n"
+            f"OpenMM said: {exc}\n"
+            "Either the generated template does not match the topology, or a "
+            "parameter file is missing for some other part of it."
+        ) from exc
+
+    result = MinimizationResult(
+        n_atoms=topology.getNumAtoms(),
+        initial_energy=initial,
+        final_energy=final,
+        max_force=max((math.sqrt(f[0] ** 2 + f[1] ** 2 + f[2] ** 2) for f in forces), default=0.0),
+    )
+    log.info(
+        "Minimization OK: %s went %.1f -> %.1f kJ/mol (max force %.1f kJ/mol/nm) with %s",
+        subject,
+        result.initial_energy,
+        result.final_energy,
+        result.max_force,
+        files,
+    )
+    return result
+
+
+def _require_finite_energy(energy: float, when: str, subject: str, files: Sequence[str]) -> None:
+    """Raise unless *energy* is finite.
+
+    A non-finite energy is the failure this whole check exists to catch: it
+    means the parameters are unphysical, which building a System cannot detect.
+    """
+    if math.isfinite(energy):
+        return
+    raise _NonFiniteEnergyError(
+        f"Minimization failed: the potential energy of {subject} is {energy} "
+        f"{when} with {list(files)}.\n"
+        "The parameters are not physical. Look for NaN charges or zero-valued "
+        "equilibrium bond lengths / angles in the generated XML, and for atoms "
+        "sharing coordinates in the input structure."
+    )
+
+
+def _minimize_parameterized_residues(
+    residues: Mapping[str, app.topology.Residue],
+    positions: unit.Quantity,
+    xml_file: PathLike,
+    base_forcefield: Sequence[str],
+    forcefield: app.ForceField,
+    **kwargs: Any,
+) -> dict[str, MinimizationResult]:
+    """Minimize each residue on its own in vacuum; returns the reports keyed by residue name.
+
+    The counterpart of :func:`_validate_parameterized_residues`: it checks the
+    numbers rather than the graph, and for the same reason - each residue is
+    tested independently of whether the rest of the input is complete.
+    """
+    return {
+        name: minimize_with_forcefield_xml(
+            _residue_subtopology(residues[name]),
+            _residue_positions(positions, residues[name]),
+            xml_file,
+            base_forcefield,
+            forcefield=forcefield,
+            **kwargs,
+        )
+        for name in sorted(residues)
+    }
 
 
 # --------------------------------------------------------------------------
@@ -730,6 +957,7 @@ def build_forcefield_xml(
     workdir: PathLike | None = None,
     cleanup: bool = False,
     validate: bool = True,
+    minimize: bool = False,
     antechamber_args: Sequence[str] = (),
     timeout: float | None = DEFAULT_AMBERTOOLS_TIMEOUT,
 ) -> ParameterizationResult:
@@ -771,6 +999,15 @@ def build_forcefield_xml(
             full input topology; with skipped residues present that check
             would always fail (they still have no template), so it is logged
             and omitted instead.
+        minimize: If True, additionally energy-minimize each parameterized
+            residue in vacuum (and the full input topology, under the same
+            no-residues-skipped condition as *validate*), reported back in
+            ``minimizations`` and ``full_minimization``. This catches
+            unphysical parameters - a NaN charge, a zero force constant -
+            which building a System alone cannot. Off by default because it
+            costs an energy evaluation per residue. It subsumes *validate*:
+            minimizing implies building the System, just with a less specific
+            error message when a template does not match.
         antechamber_args: Extra raw arguments appended to the antechamber
             command line (e.g. ``("-dr", "no")`` to relax acdoctor structure
             checks).
@@ -823,6 +1060,8 @@ def build_forcefield_xml(
         mol2_files: dict[str, str] = {}
         frcmod_files: dict[str, str] = {}
         residue_xmls: dict[str, str] = {}
+        minimizations: dict[str, MinimizationResult] = {}
+        full_minimization: MinimizationResult | None = None
         for name in sorted(to_param):
             mol2_files[name], frcmod_files[name], residue_xmls[name] = _parameterize_one_residue(
                 name,
@@ -842,23 +1081,35 @@ def build_forcefield_xml(
         combined = assemble_openmm_ffxml(mol2_files, [gaff_dat, *frcmod_files.values()], output_xml)
         log.info("Wrote combined force-field XML: %s", combined)
 
-        if validate:
-            # Parse the (large) base force field + new XML once; both checks use it.
+        if validate or minimize:
+            # Parse the (large) base force field + new XML once; every check uses it.
             files = [*base_forcefield, combined]
             forcefield = app.ForceField(*files)
-            _validate_parameterized_residues(to_param, forcefield, files)
+            # Validate first: a template mismatch then reports itself as a bond-graph
+            # problem rather than as the minimizer failing to build a System.
+            if validate:
+                _validate_parameterized_residues(to_param, forcefield, files)
+            if minimize:
+                minimizations = _minimize_parameterized_residues(
+                    to_param, positions, combined, base_forcefield, forcefield
+                )
             if skipped:
                 log.warning(
-                    "Skipping full-structure validation: %d residue type(s) "
+                    "Skipping the full-structure checks: %d residue type(s) "
                     "were skipped (%s) and still have no template, so building "
                     "a System for the whole input cannot succeed. Repair or "
-                    "parameterize those, then check with "
-                    "validate_forcefield_xml().",
+                    "parameterize those, then re-check with "
+                    "validate_forcefield_xml() / minimize_with_forcefield_xml().",
                     len(skipped),
                     ", ".join(sorted(skipped)),
                 )
             else:
-                validate_forcefield_xml(topology, combined, base_forcefield, forcefield=forcefield)
+                if validate:
+                    validate_forcefield_xml(topology, combined, base_forcefield, forcefield=forcefield)
+                if minimize:
+                    full_minimization = minimize_with_forcefield_xml(
+                        topology, positions, combined, base_forcefield, forcefield=forcefield
+                    )
     except Exception:
         # Never delete on failure: sqm.out and the intermediates are the post-mortem.
         log.warning("Intermediate files kept for debugging in %s", workdir)
@@ -875,4 +1126,6 @@ def build_forcefield_xml(
         parameterized=sorted(mol2_files),
         skipped=skipped,
         workdir=None if cleanup else str(workdir),
+        minimizations=minimizations,
+        full_minimization=full_minimization,
     )

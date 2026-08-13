@@ -31,7 +31,9 @@ system = ff.createSystem(pdb.topology)
 5. **Validate** — an `openmm.System` is built from `base force field + new
    XML` for every parameterized residue on its own (and for the whole input
    when nothing was skipped), so a template that does not match its residue
-   fails loudly here instead of at simulation time.
+   fails loudly here instead of at simulation time. With `minimize=True` each
+   of those is also energy-minimized, which catches unphysical parameters
+   that build a perfectly valid System (see below).
 
 ### What gets skipped, and why
 
@@ -94,6 +96,28 @@ system = ff.createSystem(pdb.topology)
 skip reasons (`result.skipped`), and the directory holding every intermediate
 file (`result.workdir`) for inspection (pass `cleanup=True` to remove it on
 success).
+
+### Checking the parameters, not just the templates
+
+Building a `System` proves the templates match and no parameter is missing. It
+says nothing about whether the numbers are physical: a NaN charge or a zero
+force constant survives it and only shows up later as an exploding simulation.
+`minimize=True` adds an energy evaluation and a short minimization — of each
+parameterized residue in vacuum, and of the whole input when nothing was
+skipped — and raises if the potential energy is not finite at either end:
+
+```python
+result = build_forcefield_xml("complex.pdb", "extras.xml", minimize=True)
+lig = result.minimizations["LIG"]
+print(f"{lig.initial_energy:.0f} -> {lig.final_energy:.0f} kJ/mol")
+print(result.full_minimization.max_force)  # kJ/mol/nm
+```
+
+`max_force` and `energy_change` are reported for inspection, not enforced —
+what counts as converged depends on the system. The same check is available
+on its own as `minimize_with_forcefield_xml(topology, positions, xml)`, which
+takes the OpenMM knobs (`nonbonded_method`, `max_iterations`, `platform_name`)
+that the pipeline leaves at their defaults.
 
 ### Supplying the ligand as drawn (SDF/MOL2)
 

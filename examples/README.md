@@ -9,9 +9,12 @@ conda activate forcefill        # needs ambertools on PATH
 python parameterize_ligand.py
 ```
 
-`parameterize_ligand.py` runs `build_forcefield_xml` on the prepared
-structure, writes `ben_ff.xml`, then proves the result by building an
-`openmm.System` with `amber14 + ben_ff.xml` and minimizing the complex.
+`parameterize_ligand.py` runs `build_forcefield_xml(minimize=True)` on the
+prepared structure and writes `ben_ff.xml`. The `minimize=True` proves the
+result from inside the library — a finite energy that a minimizer can lower,
+for benzamidinium alone and for the whole complex — and the script then loads
+`amber14 + ben_ff.xml` by hand and runs a few steps of dynamics, which is how
+you would actually use the file.
 
 ## Where the prepared structure came from
 
@@ -60,14 +63,14 @@ result = build_forcefield_xml(
 
 Expected output: `parameterized: ['BEN']`, nothing skipped, validation OK
 (forcefill builds a System for BEN alone and for the full complex), and a
-large negative energy after minimization.
+large negative energy after minimization for both.
 
 ## Files
 
 | File | Committed? | What it is |
 |---|---|---|
 | `prepare_trypsin_ben.py` | yes | One-time preparation script (downloads 3PTB, needs pdbfixer + rdkit) |
-| `parameterize_ligand.py` | yes | The actual example: forcefill + OpenMM minimization |
+| `parameterize_ligand.py` | yes | The actual example: forcefill + OpenMM minimization and dynamics |
 | `data/trypsin_ben_prepared.pdb` | yes | Prepared complex: protonated protein/waters/benzamidinium + bond-less Ca²⁺ |
 | `data/benzamidinium.sdf` | yes | The ligand as drawn: bond orders, +1 charge, 3D hydrogens |
 | `data/3PTB.pdb` | no (downloaded) | The deposited entry, fetched by the prep script |

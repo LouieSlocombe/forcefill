@@ -1,4 +1,4 @@
-"""Parameterize benzamidine bound to trypsin (PDB 3PTB), then build and minimize the complex.
+"""Parameterize benzamidine bound to trypsin (PDB 3PTB), minimize it, then simulate.
 
 The prepared structure and the ligand SDF come from prepare_trypsin_ben.py;
 see examples/README.md for the preparation story. Run from this directory:
@@ -30,32 +30,36 @@ def main():
     # - residue_files: antechamber reads the drawn SDF (explicit bond orders,
     #   aromatic ring, amidinium) instead of re-perceiving bonds from the
     #   PDB geometry.
+    # - minimize: not just "does a System build" but "are the numbers in it
+    #   physical" - BEN alone in vacuum, then the whole complex.
     result = build_forcefield_xml(
         PREPARED_PDB,
         HERE / "ben_ff.xml",
         net_charges={"BEN": 1},
         residue_files={"BEN": BEN_SDF},
         workdir=HERE / "wd",
+        minimize=True,
     )
     print(f"parameterized: {result.parameterized}")
     print(f"skipped:       {result.skipped or 'nothing'}")
     print(f"combined XML:  {result.forcefield_xml}")
+
+    for label, report in [("BEN alone", result.minimizations["BEN"]), ("complex", result.full_minimization)]:
+        print(
+            f"{label:>10}: {report.initial_energy:>10.0f} -> {report.final_energy:>10.0f} kJ/mol "
+            f"({report.n_atoms} atoms, max force {report.max_force:.0f} kJ/mol/nm)"
+        )
 
     # Step 2: the produced XML is a normal force-field file - load it next to
     # the standard ones and simulate.
     pdb = app.PDBFile(str(PREPARED_PDB))
     forcefield = app.ForceField("amber14-all.xml", "amber14/tip3p.xml", result.forcefield_xml)
     system = forcefield.createSystem(pdb.topology, nonbondedMethod=app.NoCutoff, constraints=app.HBonds)
-
     integrator = LangevinMiddleIntegrator(300 * unit.kelvin, 1 / unit.picosecond, 0.002 * unit.picoseconds)
     simulation = app.Simulation(pdb.topology, system, integrator)
     simulation.context.setPositions(pdb.positions)
-
-    e0 = simulation.context.getState(getEnergy=True).getPotentialEnergy()
-    simulation.minimizeEnergy(maxIterations=200)
-    e1 = simulation.context.getState(getEnergy=True).getPotentialEnergy()
-    kj = unit.kilojoule_per_mole
-    print(f"potential energy: {e0.value_in_unit(kj):.0f} -> {e1.value_in_unit(kj):.0f} kJ/mol after minimization")
+    simulation.step(10)
+    print(f"ran 10 steps of Langevin dynamics on {system.getNumParticles()} particles")
 
 
 if __name__ == "__main__":

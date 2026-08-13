@@ -6,6 +6,7 @@ everything here is skipped cleanly when they are not.
 """
 
 import logging
+import math
 import shutil
 import sys
 import xml.etree.ElementTree as ET
@@ -61,6 +62,13 @@ def test_parameterization_result_defaults():
     assert result.parameterized == []
     assert result.skipped == {}
     assert result.workdir is None
+    assert result.minimizations == {}
+    assert result.full_minimization is None
+
+
+def test_minimization_result_energy_change():
+    result = forcefill.MinimizationResult(n_atoms=6, initial_energy=22.0, final_energy=19.0, max_force=6.0)
+    assert result.energy_change == pytest.approx(-3.0)
 
 
 def test_classify_ligand_is_parameterized():
@@ -349,6 +357,105 @@ def test_validate_forcefield_xml_reports_failure(tmp_path):
         nonstandard_ffxml.validate_forcefield_xml(residue.chain.topology, xml, base_forcefield=())
 
 
+# -- minimization ----------------------------------------------------------
+#
+# These use the committed AmberTools fixtures rather than _write_lig_xml: the
+# hand-written template carries no bonded or nonbonded parameters, so every
+# energy would be a trivially finite zero.
+
+
+def _methanol_ffxml(tmp_path):
+    """A real, fully parameterized LIG force field, assembled from the committed fixtures."""
+    return nonstandard_ffxml.assemble_openmm_ffxml(
+        {"LIG": DATA / "methanol.mol2"}, [DATA / "methanol.frcmod"], tmp_path / "methanol_ff.xml"
+    )
+
+
+def _methanol_positions(xyz=METHANOL_XYZ):
+    return unit.Quantity([Vec3(*p) for p in xyz], unit.angstrom)
+
+
+def test_minimize_reports_energies_and_forces(tmp_path):
+    residue = _methanol_residue()
+    result = nonstandard_ffxml.minimize_with_forcefield_xml(
+        residue.chain.topology, _methanol_positions(), _methanol_ffxml(tmp_path), base_forcefield=()
+    )
+    assert result.n_atoms == 6
+    assert math.isfinite(result.initial_energy)
+    assert math.isfinite(result.final_energy)
+    # Relations only, never exact energies: the CPU platform is not reproducible
+    # run to run once a system is large enough to split across threads.
+    assert result.final_energy < result.initial_energy
+    assert result.energy_change == pytest.approx(result.final_energy - result.initial_energy)
+    assert result.max_force > 0
+
+
+def test_minimize_detects_nonfinite_energy(tmp_path):
+    # Superpose O1 on C1: the H-C1-O1 angle term is then undefined and the
+    # potential energy comes back NaN, which createSystem alone never notices.
+    collapsed = list(METHANOL_XYZ)
+    collapsed[1] = collapsed[0]
+    residue = _methanol_residue()
+    with pytest.raises(RuntimeError, match="Minimization failed") as excinfo:
+        nonstandard_ffxml.minimize_with_forcefield_xml(
+            residue.chain.topology, _methanol_positions(collapsed), _methanol_ffxml(tmp_path), base_forcefield=()
+        )
+    assert "before minimizing" in str(excinfo.value)
+
+
+def test_minimize_reports_template_mismatch(tmp_path):
+    xml, _ff = _write_lig_xml(tmp_path, complete=False)  # template lacks the hydroxyl hydrogen
+    residue = _methanol_residue()
+    with pytest.raises(RuntimeError, match="Minimization failed"):
+        nonstandard_ffxml.minimize_with_forcefield_xml(
+            residue.chain.topology, _methanol_positions(), xml, base_forcefield=()
+        )
+
+
+def test_minimize_names_the_topology_it_failed_on(tmp_path):
+    # A multi-residue topology is named by size rather than by residue, and the
+    # untemplated GLY is what makes it fail.
+    pdb = app.PDBFile(str(write_methanol_pdb(tmp_path / "in.pdb", broken_gly=True)))
+    with pytest.raises(RuntimeError, match="Minimization failed") as excinfo:
+        nonstandard_ffxml.minimize_with_forcefield_xml(
+            pdb.topology, pdb.positions, _methanol_ffxml(tmp_path), base_forcefield=()
+        )
+    assert "the topology (10 atoms, 2 residues)" in str(excinfo.value)
+
+
+def test_minimize_reports_unknown_platform(tmp_path):
+    residue = _methanol_residue()
+    with pytest.raises(RuntimeError, match="Minimization failed") as excinfo:
+        nonstandard_ffxml.minimize_with_forcefield_xml(
+            residue.chain.topology,
+            _methanol_positions(),
+            _methanol_ffxml(tmp_path),
+            base_forcefield=(),
+            platform_name="Bogus",
+        )
+    assert "Bogus" in str(excinfo.value)
+
+
+def test_minimize_rejects_settings_that_would_silently_do_nothing(tmp_path):
+    # OpenMM accepts a negative tolerance and then minimizes nothing at all,
+    # which would leave this check reporting success without having run.
+    residue = _methanol_residue()
+    args = (residue.chain.topology, _methanol_positions(), _methanol_ffxml(tmp_path))
+    with pytest.raises(ValueError, match="tolerance"):
+        nonstandard_ffxml.minimize_with_forcefield_xml(*args, base_forcefield=(), tolerance=-1.0)
+    with pytest.raises(ValueError, match="max_iterations"):
+        nonstandard_ffxml.minimize_with_forcefield_xml(*args, base_forcefield=(), max_iterations=-5)
+
+
+def test_minimize_accepts_prebuilt_forcefield(tmp_path):
+    xml = _methanol_ffxml(tmp_path)
+    residue = _methanol_residue()
+    result = nonstandard_ffxml.minimize_with_forcefield_xml(
+        residue.chain.topology, _methanol_positions(), xml, base_forcefield=(), forcefield=app.ForceField(xml)
+    )
+    assert math.isfinite(result.final_energy)
+
+
 # -- build_forcefield_xml orchestration (AmberTools faked) -----------------
 
 
@@ -402,6 +509,9 @@ def test_orchestration_end_to_end_with_fakes(fake_ambertools, tmp_path):
     assert Path(result.residue_xmls["LIG"]) == wd / "LIG" / "LIG.xml"
     assert (wd / "LIG" / "LIG.pdb").is_file()
     assert result.workdir == str(wd)
+    # minimize is opt-in; the default run does no energy evaluation.
+    assert result.minimizations == {}
+    assert result.full_minimization is None
 
     (ante,) = fake_ambertools["antechamber"]
     assert ante["residue"] == "LIG"
@@ -425,6 +535,48 @@ def test_orchestration_residue_files_bypass_extraction(fake_ambertools, tmp_path
     (ante,) = fake_ambertools["antechamber"]
     assert ante["input"] == str(sdf)
     assert not (wd / "LIG" / "LIG.pdb").exists()  # extraction skipped
+
+
+def test_orchestration_minimize(fake_ambertools, tmp_path):
+    pdb = write_methanol_pdb(tmp_path / "in.pdb")
+    result = forcefill.build_forcefield_xml(
+        pdb, tmp_path / "extras.xml", base_forcefield=(), workdir=tmp_path / "wd", minimize=True
+    )
+    assert result.minimizations.keys() == {"LIG"}
+    assert result.minimizations["LIG"].n_atoms == 6
+    assert math.isfinite(result.minimizations["LIG"].final_energy)
+    # Nothing was skipped, so the whole input is minimized too. It is the same
+    # six atoms here, but by a different route: the full topology, not a
+    # per-residue subtopology.
+    assert result.full_minimization is not None
+    assert result.full_minimization.n_atoms == 6
+
+
+def test_orchestration_minimize_without_validate(fake_ambertools, tmp_path):
+    # minimize subsumes validate: it has to build the System to get an energy.
+    pdb = write_methanol_pdb(tmp_path / "in.pdb")
+    result = forcefill.build_forcefield_xml(
+        pdb, tmp_path / "extras.xml", base_forcefield=(), validate=False, minimize=True
+    )
+    try:
+        assert result.minimizations.keys() == {"LIG"}
+        assert result.full_minimization is not None
+    finally:
+        shutil.rmtree(result.workdir, ignore_errors=True)
+
+
+def test_orchestration_minimize_skips_full_structure_when_residue_skipped(fake_ambertools, tmp_path, caplog):
+    pdb = write_methanol_pdb(tmp_path / "in.pdb", broken_gly=True)
+    with caplog.at_level(logging.WARNING):
+        result = forcefill.build_forcefield_xml(
+            pdb, tmp_path / "extras.xml", base_forcefield=(), workdir=tmp_path / "wd", minimize=True
+        )
+    assert "GLY" in result.skipped
+    # The parameterized residue is still minimized on its own; the full
+    # structure cannot be, because GLY has no template.
+    assert result.minimizations.keys() == {"LIG"}
+    assert result.full_minimization is None
+    assert "Skipping the full-structure checks" in caplog.text
 
 
 def test_orchestration_cleanup_removes_workdir(fake_ambertools, tmp_path):

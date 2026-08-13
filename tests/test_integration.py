@@ -4,6 +4,7 @@ These run antechamber/parmchk2 for real and are skipped when AmberTools
 (or its GAFF data files) is not available.
 """
 
+import math
 import shutil
 from pathlib import Path
 
@@ -86,6 +87,22 @@ def test_cleanup_refuses_output_inside_workdir(tmp_path):
     pdb = write_methanol_pdb(tmp_path / "in.pdb")
     with pytest.raises(ValueError, match="inside the working directory"):
         build_forcefield_xml(pdb, tmp_path / "wd" / "extras.xml", workdir=tmp_path / "wd", cleanup=True)
+
+
+def test_minimize_end_to_end(tmp_path):
+    # The full path with real AmberTools parameters: antechamber charges and
+    # parmchk2 constants have to produce a finite energy that a minimizer can
+    # lower, not merely a System that builds.
+    pdb = write_methanol_pdb(tmp_path / "in.pdb")
+    result = build_forcefield_xml(pdb, tmp_path / "extras.xml", workdir=tmp_path / "wd", minimize=True)
+
+    ligand = result.minimizations["LIG"]
+    assert ligand.n_atoms == 6
+    assert math.isfinite(ligand.initial_energy)
+    assert ligand.energy_change < 0
+
+    assert result.full_minimization is not None
+    assert math.isfinite(result.full_minimization.final_energy)
 
 
 def test_skipped_residue_still_returns_result(tmp_path):
