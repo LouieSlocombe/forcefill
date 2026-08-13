@@ -1,69 +1,61 @@
-"""forcefill.nonstandard_ffxml
-===========================
+"""Identify non-standard residues in a PDB with OpenMM and build a ready-to-use force-field XML for them.
 
-Identify non-standard residues in a PDB file with OpenMM and produce a
-ready-to-use OpenMM force-field XML for them.
+Pipeline:
+    1. ``ForceField.getUnmatchedResidues`` finds every residue the chosen base
+       force field cannot match.
+    2. Unmatched residues are classified:
 
-Pipeline
---------
-1.  ``ForceField.getUnmatchedResidues`` finds every residue the chosen base
-    force field cannot match.
-2.  Unmatched residues are classified:
+       * standard residues that are merely missing atoms   -> reported, skipped
+         (repair the structure with PDBFixer / ``Modeller.addHydrogens`` instead)
+       * monatomic species (ions)                          -> reported, skipped
+         (load an ion parameter file; never run antechamber on a bare ion)
+       * residues covalently bonded to neighbours          -> skipped by default
+         (stand-alone GAFF treatment is wrong for polymer-linked residues such
+         as modified amino acids; those need capping + a consistent charge
+         derivation, e.g. with pyRED or ffparam-style workflows)
+       * free-standing hetero molecules (ligands, cofactors) -> parameterized
 
-    * standard residues that are merely missing atoms   -> reported, skipped
-      (repair the structure with PDBFixer / ``Modeller.addHydrogens`` instead)
-    * monatomic species (ions)                          -> reported, skipped
-      (load an ion parameter file; never run antechamber on a bare ion)
-    * residues covalently bonded to neighbours          -> skipped by default
-      (stand-alone GAFF treatment is wrong for polymer-linked residues such
-      as modified amino acids; those need capping + a consistent charge
-      derivation, e.g. with pyRED or ffparam-style workflows)
-    * free-standing hetero molecules (ligands, cofactors) -> parameterized
+    3. Each unique parameterizable residue is written to its own PDB and run
+       through AmberTools:
 
-3.  Each unique parameterizable residue is written to its own PDB and run
-    through AmberTools:
+       * ``antechamber``  assigns GAFF/GAFF2 atom types + AM1-BCC charges
+         (-> ``<RES>.mol2`` residue template)
+       * ``parmchk2``     generates any GAFF parameters that are missing
+         (-> ``<RES>.frcmod``)
 
-    * ``antechamber``  assigns GAFF/GAFF2 atom types + AM1-BCC charges
-      (-> ``<RES>.mol2`` residue template)
-    * ``parmchk2``     generates any GAFF parameters that are missing
-      (-> ``<RES>.frcmod``)
+    4. ParmEd merges the GAFF parameter database, the frcmod files and the mol2
+       templates into OpenMM ffxml: one XML per residue plus one combined XML
+       containing every residue (atom types, residue templates with charges,
+       bonds/angles/torsions and nonbonded parameters).
 
-4.  ParmEd merges the GAFF parameter database, the frcmod files and the mol2
-    templates into OpenMM ffxml: one XML per residue plus one combined XML
-    containing every residue (atom types, residue templates with charges,
-    bonds/angles/torsions and nonbonded parameters).
+    5. The combined XML is validated by building an ``openmm.System`` from
+       ``base force field + new XML`` for each parameterized residue on its
+       own; when no residues were skipped, a System for the full input
+       topology is built as well.
 
-5.  The combined XML is validated by building an ``openmm.System`` from
-    ``base force field + new XML`` for each parameterized residue on its
-    own; when no residues were skipped, a System for the full input
-    topology is built as well.
-
-Requirements
-------------
-* ``openmm >= 7.6`` and ``parmed >= 3.4`` (``pip install openmm parmed``)
-* AmberTools (``antechamber``, ``parmchk2``) on ``PATH`` for step 3, e.g.
-  ``conda install -c conda-forge ambertools``
+Requirements:
+    * ``openmm >= 7.6`` and ``parmed >= 3.4`` (``pip install openmm parmed``)
+    * AmberTools (``antechamber``, ``parmchk2``) on ``PATH`` for step 3, e.g.
+      ``conda install -c conda-forge ambertools``
 
 Example:
--------
->>> from forcefill import build_forcefield_xml
->>> result = build_forcefield_xml("complex.pdb", "extras.xml", net_charges={"LIG": -1})
->>> result.parameterized
-['LIG']
+    >>> from forcefill import build_forcefield_xml
+    >>> result = build_forcefield_xml("complex.pdb", "extras.xml", net_charges={"LIG": -1})
+    >>> result.parameterized
+    ['LIG']
 
-then simulate with::
+    then simulate with::
 
-    ff = ForceField("amber14-all.xml", "amber14/tip3p.xml", "extras.xml")
-    system = ff.createSystem(pdb.topology, ...)
+        ff = ForceField("amber14-all.xml", "amber14/tip3p.xml", "extras.xml")
+        system = ff.createSystem(pdb.topology, ...)
 
 Notes:
------
-* Ligands must contain **all explicit hydrogens** with reasonable geometry;
-  AM1-BCC charges are meaningless otherwise.
-* Load either the combined XML *or* the per-residue XMLs with a ForceField,
-  never both at once (duplicate GAFF atom-type definitions would collide).
-* If you would rather not manage XML files at all, the same job can be done
-  at runtime with ``openmmforcefields.generators.GAFFTemplateGenerator``.
+    * Ligands must contain **all explicit hydrogens** with reasonable geometry;
+      AM1-BCC charges are meaningless otherwise.
+    * Load either the combined XML *or* the per-residue XMLs with a ForceField,
+      never both at once (duplicate GAFF atom-type definitions would collide).
+    * If you would rather not manage XML files at all, the same job can be done
+      at runtime with ``openmmforcefields.generators.GAFFTemplateGenerator``.
 """
 
 from __future__ import annotations
@@ -77,7 +69,6 @@ from collections import defaultdict
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Union
 
 import parmed
 from openmm import app, unit
@@ -100,7 +91,7 @@ __all__ = [
     "validate_forcefield_xml",
 ]
 
-PathLike = Union[str, os.PathLike]
+PathLike = str | os.PathLike
 
 #: Base force field used to decide what counts as "non-standard".
 DEFAULT_BASE_FORCEFIELD = ("amber14-all.xml", "amber14/tip3p.xml")
@@ -216,8 +207,9 @@ def find_nonstandard_residues(
 def _classify_unmatched(
     unmatched: Sequence[app.topology.Residue],
 ) -> tuple[dict[str, app.topology.Residue], dict[str, str]]:
-    """Split unmatched residues into {name: representative} to parameterize
-    and {name: reason} to skip.
+    """Split unmatched residues into those to parameterize and those to skip.
+
+    Returns ``({name: representative_residue}, {name: skip_reason})``.
     """
     groups: dict[str, list[app.topology.Residue]] = defaultdict(list)
     for res in unmatched:
@@ -318,9 +310,7 @@ def extract_residue_to_pdb(
     residue: app.topology.Residue,
     out_pdb: PathLike,
 ) -> str:
-    """Write a single residue (its atoms, internal bonds and coordinates)
-    to *out_pdb* and return the path.
-    """
+    """Write a single residue's atoms, internal bonds and coordinates to *out_pdb* and return the path."""
     for atom in residue.atoms():
         if atom.element is None:
             log.warning(
@@ -359,7 +349,7 @@ def _require_executable(name: str) -> str:
 
 def _run(cmd: Sequence[str], cwd: PathLike) -> None:
     log.debug("Running: %s (cwd=%s)", " ".join(map(str, cmd)), cwd)
-    proc = subprocess.run([str(c) for c in cmd], cwd=str(cwd), capture_output=True, text=True)
+    proc = subprocess.run([str(c) for c in cmd], cwd=str(cwd), capture_output=True, text=True, check=False)
     if proc.returncode != 0:
         raise RuntimeError(
             f"Command failed with exit code {proc.returncode}:\n"
@@ -486,12 +476,12 @@ def assemble_openmm_ffxml(
     output_xml: PathLike,
     write_unused: bool = False,
 ) -> str:
-    """Merge mol2 residue templates and Amber parameter files (gaff*.dat,
-    frcmod) into a single OpenMM force-field XML.
+    """Merge mol2 residue templates and Amber parameter files into a single OpenMM force-field XML.
 
-    With ``write_unused=False`` only the atom types and parameters actually
-    referenced by the residue templates are written, which keeps the XML
-    small even though the full GAFF database is loaded.
+    ``parameter_files`` typically holds the GAFF database (gaff*.dat) plus the
+    per-residue frcmod files. With ``write_unused=False`` only the atom types
+    and parameters actually referenced by the residue templates are written,
+    which keeps the XML small even though the full GAFF database is loaded.
     """
     params = AmberParameterSet(*[str(f) for f in parameter_files])
     omm_params = OpenMMParameterSet.from_parameterset(params)
@@ -516,27 +506,27 @@ def _validate_parameterized_residues(
     xml_file: PathLike,
     base_forcefield: Sequence[str],
 ) -> None:
-    """Raise RuntimeError unless base_forcefield + xml_file can build a
-    System for each residue in *residues* on its own.
+    """Check that ``base_forcefield + xml_file`` builds a System for each residue on its own.
 
     This checks exactly what was produced: that each generated template
     matches the residue's original bond graph and that no parameters are
     missing - independently of whether the rest of the input structure is
-    complete.
+    complete. Raises RuntimeError on the first residue that fails.
     """
     files = [*base_forcefield, str(xml_file)]
     forcefield = app.ForceField(*files)
-    for name in sorted(residues):
-        try:
+    name = None
+    try:
+        for name in sorted(residues):
             forcefield.createSystem(_residue_subtopology(residues[name]))
-        except Exception as exc:
-            raise RuntimeError(
-                f"Validation failed: could not build an openmm.System for "
-                f"residue {name} on its own from {files}.\n"
-                f"OpenMM said: {exc}\n"
-                "The generated template does not match the residue's bond "
-                "graph, or parameters are missing."
-            ) from exc
+    except Exception as exc:
+        raise RuntimeError(
+            f"Validation failed: could not build an openmm.System for "
+            f"residue {name} on its own from {files}.\n"
+            f"OpenMM said: {exc}\n"
+            "The generated template does not match the residue's bond "
+            "graph, or parameters are missing."
+        ) from exc
     log.info("Validation OK: per-residue Systems built for %s from %s", sorted(residues), files)
 
 
@@ -545,9 +535,7 @@ def validate_forcefield_xml(
     xml_file: PathLike,
     base_forcefield: Sequence[str] = DEFAULT_BASE_FORCEFIELD,
 ) -> None:
-    """Raise RuntimeError unless base_forcefield + xml_file can build a
-    System for *topology*.
-    """
+    """Raise RuntimeError unless ``base_forcefield + xml_file`` can build a System for *topology*."""
     files = [*base_forcefield, str(xml_file)]
     try:
         forcefield = app.ForceField(*files)
@@ -582,44 +570,35 @@ def build_forcefield_xml(
     validate: bool = True,
     antechamber_args: Sequence[str] = (),
 ) -> ParameterizationResult:
-    """Identify non-standard residues in *pdb_file* and build an OpenMM
-    force-field XML for them.
+    """Identify non-standard residues in *pdb_file* and build an OpenMM force-field XML for them.
 
-    Parameters
-    ----------
-    pdb_file
-        Input structure. Ligands must have explicit hydrogens; the element
-        columns and (for hetero groups) CONECT records should be present.
-    output_xml
-        Where to write the combined force-field XML.
-    base_forcefield
-        ffxml files defining what counts as "standard".
-    net_charges
-        ``{residue_name: net_charge}``; defaults to 0 per residue. Getting
-        this right is essential for sensible AM1-BCC charges.
-    multiplicities
-        ``{residue_name: spin_multiplicity}``; defaults to 1.
-    atom_type
-        ``"gaff2"`` (default) or ``"gaff"``.
-    charge_method
-        antechamber charge method, default ``"bcc"`` (AM1-BCC).
-    workdir
-        Directory for intermediate files (per-residue PDB, mol2, frcmod,
-        per-residue XML). A fresh temporary directory is created and kept
-        if not given; its path is reported in the result.
-    validate
-        If True (default), verify that ``base_forcefield + output_xml`` can
-        build a System for each parameterized residue on its own. When no
-        residues were skipped, additionally verify the full input topology;
-        with skipped residues present that check would always fail (they
-        still have no template), so it is logged and omitted instead.
-    antechamber_args
-        Extra raw arguments appended to the antechamber command line
-        (e.g. ``("-dr", "no")`` to relax acdoctor structure checks).
+    Args:
+        pdb_file: Input structure. Ligands must have explicit hydrogens; the
+            element columns and (for hetero groups) CONECT records should be
+            present.
+        output_xml: Where to write the combined force-field XML.
+        base_forcefield: ffxml files defining what counts as "standard".
+        net_charges: ``{residue_name: net_charge}``; defaults to 0 per
+            residue. Getting this right is essential for sensible AM1-BCC
+            charges.
+        multiplicities: ``{residue_name: spin_multiplicity}``; defaults to 1.
+        atom_type: ``"gaff2"`` (default) or ``"gaff"``.
+        charge_method: antechamber charge method, default ``"bcc"`` (AM1-BCC).
+        workdir: Directory for intermediate files (per-residue PDB, mol2,
+            frcmod, per-residue XML). A fresh temporary directory is created
+            and kept if not given; its path is reported in the result.
+        validate: If True (default), verify that ``base_forcefield +
+            output_xml`` can build a System for each parameterized residue on
+            its own. When no residues were skipped, additionally verify the
+            full input topology; with skipped residues present that check
+            would always fail (they still have no template), so it is logged
+            and omitted instead.
+        antechamber_args: Extra raw arguments appended to the antechamber
+            command line (e.g. ``("-dr", "no")`` to relax acdoctor structure
+            checks).
 
     Returns:
-    -------
-    ParameterizationResult
+        ParameterizationResult
     """
     net_charges = dict(net_charges or {})
     multiplicities = dict(multiplicities or {})

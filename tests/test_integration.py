@@ -36,9 +36,7 @@ pytestmark = [
 
 
 def _write_test_pdb(path, broken_gly=False):
-    """Methanol as hetero residue LIG; optionally plus a hydrogen-stripped
-    free glycine (standard name, missing atoms -> gets skipped).
-    """
+    """Write methanol as hetero residue LIG, optionally plus a hydrogen-stripped GLY that gets skipped."""
     top = app.Topology()
     chain = top.addChain("A")
     res = top.addResidue("LIG", chain)

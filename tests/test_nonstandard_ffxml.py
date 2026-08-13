@@ -19,9 +19,7 @@ from forcefill import nonstandard_ffxml
 
 
 class StubResidue:
-    """Duck-types the Residue surface used by ``_classify_unmatched``:
-    ``.name``, ``.atoms()`` and ``.external_bonds()``.
-    """
+    """Duck-types the Residue surface ``_classify_unmatched`` uses: ``.name``, ``.atoms()``, ``.external_bonds()``."""
 
     def __init__(self, name, n_atoms=2, external_bonds=0):
         self.name = name
