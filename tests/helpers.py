@@ -62,6 +62,84 @@ def add_broken_gly_residue(top, chain_id="B"):
     ]
 
 
+#: Idealized glycerol geometry (angstrom): the archetypal crystallization
+#: additive, and the residue name most often mistaken for a ligand.
+GLYCEROL_ATOMS = [
+    ("C1", element.carbon),
+    ("C2", element.carbon),
+    ("C3", element.carbon),
+    ("O1", element.oxygen),
+    ("O2", element.oxygen),
+    ("O3", element.oxygen),
+]
+
+GLYCEROL_XYZ = [
+    (0.000, 0.000, 0.000),
+    (1.520, 0.000, 0.000),
+    (2.100, 1.400, 0.000),
+    (-0.480, 1.330, 0.000),
+    (2.000, -0.700, 1.150),
+    (3.520, 1.400, 0.000),
+]
+
+GLYCEROL_BONDS = [("C1", "C2"), ("C2", "C3"), ("C1", "O1"), ("C2", "O2"), ("C3", "O3")]
+
+
+def add_water_residue(top, chain_id="W", name="HOH", origin=(0.0, 0.0, 0.0), virtual_site=False):
+    """Append one water to *top*; returns its coordinate list (angstrom tuples).
+
+    With *virtual_site*, adds the massless ``M`` particle of a 4-site model -
+    element None, which is why the cleaner classifies water before it looks at
+    elements.
+    """
+    chain = top.addChain(chain_id)
+    res = top.addResidue(name, chain)
+    o = top.addAtom("O", element.oxygen, res)
+    h1 = top.addAtom("H1", element.hydrogen, res)
+    h2 = top.addAtom("H2", element.hydrogen, res)
+    top.addBond(o, h1)
+    top.addBond(o, h2)
+    dx, dy, dz = origin
+    xyz = [(dx, dy, dz), (dx + 0.96, dy, dz), (dx - 0.24, dy + 0.93, dz)]
+    if virtual_site:
+        top.addAtom("M", None, res)
+        xyz.append((dx + 0.15, dy + 0.06, dz))
+    return xyz
+
+
+def add_ion_residue(top, name, elem, chain_id="I", origin=(0.0, 0.0, 0.0)):
+    """Append a one-atom ion residue (name and atom name both *name*)."""
+    chain = top.addChain(chain_id)
+    res = top.addResidue(name, chain)
+    top.addAtom(name, elem, res)
+    return [origin]
+
+
+def add_glycerol_residue(top, chain_id="G", name="GOL", origin=(0.0, 0.0, 0.0)):
+    """Append a glycerol (heavy atoms only, as X-ray additives come); returns its coordinates."""
+    chain = top.addChain(chain_id)
+    res = top.addResidue(name, chain)
+    atoms = {}
+    for atom_name, elem in GLYCEROL_ATOMS:
+        atoms[atom_name] = top.addAtom(atom_name, elem, res)
+    for a, b in GLYCEROL_BONDS:
+        top.addBond(atoms[a], atoms[b])
+    dx, dy, dz = origin
+    return [(x + dx, y + dy, z + dz) for x, y, z in GLYCEROL_XYZ]
+
+
+def bond_across_residues(top, res_name_a, res_name_b):
+    """Bond the first atom of the first *res_name_a* to the first atom of the first *res_name_b*.
+
+    Makes an otherwise free-standing residue covalently linked, which is the
+    one condition under which the cleaner refuses to delete it.
+    """
+    by_name = {}
+    for res in top.residues():
+        by_name.setdefault(res.name, res)
+    top.addBond(next(by_name[res_name_a].atoms()), next(by_name[res_name_b].atoms()))
+
+
 def _write_pdb(path, top, xyz):
     positions = unit.Quantity([Vec3(*p) for p in xyz], unit.angstrom)
     with open(path, "w") as fh:
@@ -107,11 +185,36 @@ def write_methanol_sdf(path):
 def write_water_pdb(path):
     """Write a single TIP3P-matchable water (residue HOH with O/H1/H2)."""
     top = app.Topology()
-    chain = top.addChain("W")
-    res = top.addResidue("HOH", chain)
-    o = top.addAtom("O", element.oxygen, res)
-    h1 = top.addAtom("H1", element.hydrogen, res)
-    h2 = top.addAtom("H2", element.hydrogen, res)
-    top.addBond(o, h1)
-    top.addBond(o, h2)
-    return _write_pdb(path, top, [(0.0, 0.0, 0.0), (0.96, 0.0, 0.0), (-0.24, 0.93, 0.0)])
+    return _write_pdb(path, top, add_water_residue(top))
+
+
+def write_ligand_and_water_pdb(path):
+    """Write methanol plus one hydrogen-bearing water: only the water is solvent."""
+    top = app.Topology()
+    xyz = add_methanol_residue(top)
+    xyz += add_water_residue(top, origin=(5.0, 0.0, 0.0))
+    return _write_pdb(path, top, xyz)
+
+
+def write_ligand_and_glycerol_pdb(path):
+    """Write methanol plus a glycerol: a free-standing additive is indistinguishable from a ligand."""
+    top = app.Topology()
+    xyz = add_methanol_residue(top)
+    xyz += add_glycerol_residue(top, origin=(0.0, -8.0, 0.0))
+    return _write_pdb(path, top, xyz)
+
+
+def write_dirty_pdb(path, waters=3):
+    """Write what comes off the PDB: a ligand plus water, a counter-ion, a structural metal and glycerol.
+
+    Everything but LIG is in its own chain, so deleting a category empties a
+    chain and exercises Modeller dropping it.
+    """
+    top = app.Topology()
+    xyz = add_methanol_residue(top)
+    for i in range(waters):
+        xyz += add_water_residue(top, chain_id=f"W{i}", origin=(5.0 + 3.0 * i, 0.0, 0.0))
+    xyz += add_ion_residue(top, "NA", element.sodium, chain_id="N", origin=(-5.0, 0.0, 0.0))
+    xyz += add_ion_residue(top, "CA", element.calcium, chain_id="C", origin=(-8.0, 0.0, 0.0))
+    xyz += add_glycerol_residue(top, origin=(0.0, -8.0, 0.0))
+    return _write_pdb(path, top, xyz)

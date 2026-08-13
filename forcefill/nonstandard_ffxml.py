@@ -52,6 +52,11 @@ Example:
         system = ff.createSystem(pdb.topology, ...)
 
 Notes:
+    * Crystal structures carry water, buffer ions and crystallization
+      additives, and a free-standing additive such as glycerol looks exactly
+      like a ligand to step 2 - so it gets parameterized. Strip them first with
+      :func:`forcefill.clean_pdb`, or pass ``clean_structure=True`` here to do
+      it in memory.
     * Ligands must contain **all explicit hydrogens** with reasonable geometry;
       AM1-BCC charges are meaningless otherwise.
     * Load either the combined XML *or* the per-residue XMLs with a ForceField,
@@ -69,7 +74,7 @@ import shutil
 import subprocess
 import tempfile
 from collections import defaultdict
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -79,6 +84,9 @@ from openmm import Context, LocalEnergyMinimizer, Platform, VerletIntegrator, ap
 from parmed.amber import AmberParameterSet
 from parmed.modeller import ResidueTemplate, ResidueTemplateContainer
 from parmed.openmm import OpenMMParameterSet
+
+from ._residue_names import STANDARD_RESIDUES
+from .clean_structure import CleaningResult, clean_topology
 
 log = logging.getLogger(__name__)
 
@@ -137,76 +145,6 @@ _ANTECHAMBER_FORMATS = {
     ".mol": "mdl",
 }
 
-#: Residue names the base force fields already know. Unmatched residues with
-#: these names are almost always incomplete structures, not new chemistry.
-_STANDARD_RESIDUES = frozenset(
-    [
-        "ALA",
-        "ARG",
-        "ASN",
-        "ASP",
-        "CYS",
-        "GLN",
-        "GLU",
-        "GLY",
-        "HIS",
-        "ILE",
-        "LEU",
-        "LYS",
-        "MET",
-        "PHE",
-        "PRO",
-        "SER",
-        "THR",
-        "TRP",
-        "TYR",
-        "VAL",
-        "ASH",
-        "GLH",
-        "LYN",
-        "CYX",
-        "CYM",
-        "HID",
-        "HIE",
-        "HIP",
-        "ACE",
-        "NME",
-        "NMA",
-        "DA",
-        "DC",
-        "DG",
-        "DT",
-        "DA3",
-        "DA5",
-        "DC3",
-        "DC5",
-        "DG3",
-        "DG5",
-        "DT3",
-        "DT5",
-        "A",
-        "C",
-        "G",
-        "U",
-        "A3",
-        "A5",
-        "C3",
-        "C5",
-        "G3",
-        "G5",
-        "U3",
-        "U5",
-        "HOH",
-        "WAT",
-        "H2O",
-        "TIP",
-        "TIP3",
-        "TP3",
-        "SPC",
-        "SOL",
-    ]
-)
-
 
 @dataclass
 class MinimizationResult:
@@ -252,9 +190,14 @@ class ParameterizationResult:
     #: Per-residue vacuum minimizations, keyed by residue name. Empty unless
     #: ``minimize=True``.
     minimizations: dict[str, MinimizationResult] = field(default_factory=dict)
-    #: Minimization of the whole input topology. ``None`` unless
-    #: ``minimize=True`` *and* no residue was skipped.
+    #: Minimization of the whole input topology - the *cleaned* topology when
+    #: ``clean_structure=True``, so reconcile ``n_atoms`` against
+    #: ``cleaning.n_atoms_after``. ``None`` unless ``minimize=True`` *and* no
+    #: residue was skipped.
     full_minimization: MinimizationResult | None = None
+    #: What ``clean_structure=True`` removed from the input. ``None`` when it
+    #: was off, in which case nothing was deleted.
+    cleaning: CleaningResult | None = None
 
 
 # --------------------------------------------------------------------------
@@ -302,7 +245,7 @@ def _classify_unmatched(
                 counts,
                 n_atoms,
             )
-        if name in _STANDARD_RESIDUES:
+        if name in STANDARD_RESIDUES:
             skipped[name] = (
                 f"standard residue that failed to match ({len(residues)} "
                 "copies) - it is probably missing atoms or has non-standard "
@@ -332,13 +275,18 @@ def _warn_unused_overrides(
     net_charges: Mapping[str, int],
     multiplicities: Mapping[str, int],
     residue_files: Mapping[str, PathLike] | None = None,
+    removed: Iterable[str] = (),
 ) -> None:
     """Warn about net_charges/multiplicities/residue_files keys with no effect.
 
     A typo'd or case-mismatched key silently leaves the defaults (net
     charge 0, multiplicity 1, PDB extraction), which yields plausible but
     wrong AM1-BCC charges - the worst failure mode.
+
+    *removed* names the residues cleaning deleted, so an override aimed at one
+    of them reports the real cause rather than "matches no residue".
     """
+    removed = set(removed)
     for label, mapping in (
         ("net_charges", net_charges),
         ("multiplicities", multiplicities),
@@ -347,7 +295,14 @@ def _warn_unused_overrides(
         for key in mapping:
             if key in to_param:
                 continue
-            if key in skipped:
+            if key in removed:
+                log.warning(
+                    "%s[%r] has no effect: residue %s was removed from the structure by clean_structure=True.",
+                    label,
+                    key,
+                    key,
+                )
+            elif key in skipped:
                 log.warning(
                     "%s[%r] has no effect: residue %s is being skipped, not parameterized.",
                     label,
@@ -948,6 +903,7 @@ def build_forcefield_xml(
     pdb_file: PathLike,
     output_xml: PathLike = "nonstandard_ff.xml",
     *,
+    clean_structure: bool = False,
     base_forcefield: Sequence[str] = DEFAULT_BASE_FORCEFIELD,
     net_charges: Mapping[str, int] | None = None,
     multiplicities: Mapping[str, int] | None = None,
@@ -968,6 +924,19 @@ def build_forcefield_xml(
             element columns and (for hetero groups) CONECT records should be
             present.
         output_xml: Where to write the combined force-field XML.
+        clean_structure: If True, remove crystallographic water, bulk
+            counter-ions and crystallization additives *in memory* before
+            anything else looks at the structure, using
+            :func:`~forcefill.clean_topology` with its defaults - so structural
+            metals are kept. Off by default: it deletes atoms, and a pipeline
+            should never do that unasked. What went is reported in
+            ``cleaning``. Note that everything downstream then describes the
+            *cleaned* system rather than the file on disk: the full-structure
+            ``validate`` / ``minimize`` checks, and therefore
+            ``full_minimization.n_atoms``, refer to the stripped topology. For
+            anything beyond the defaults - keeping a particular additive,
+            stripping a metal - call :func:`~forcefill.clean_pdb` yourself and
+            pass the cleaned file in.
         base_forcefield: ffxml files defining what counts as "standard".
         net_charges: ``{residue_name: net_charge}``; defaults to 0 per
             residue. Getting this right is essential for sensible AM1-BCC
@@ -996,9 +965,9 @@ def build_forcefield_xml(
         validate: If True (default), verify that ``base_forcefield +
             output_xml`` can build a System for each parameterized residue on
             its own. When no residues were skipped, additionally verify the
-            full input topology; with skipped residues present that check
-            would always fail (they still have no template), so it is logged
-            and omitted instead.
+            full input topology (the cleaned one, with *clean_structure*);
+            with skipped residues present that check would always fail (they
+            still have no template), so it is logged and omitted instead.
         minimize: If True, additionally energy-minimize each parameterized
             residue in vacuum (and the full input topology, under the same
             no-residues-skipped condition as *validate*), reported back in
@@ -1026,10 +995,28 @@ def build_forcefield_xml(
     pdb = app.PDBFile(str(pdb_file))
     topology, positions = pdb.topology, pdb.positions
 
+    cleaning: CleaningResult | None = None
+    if clean_structure:
+        # Both halves rebound together, before anything holds a Residue
+        # reference: _classify_unmatched stores live Residue objects and
+        # _residue_positions indexes positions by atom.index, so a topology
+        # swapped in later would silently address the wrong coordinates.
+        topology, positions, cleaning = clean_topology(topology, positions)
+        if cleaning.n_atoms_removed:
+            log.warning(
+                "Cleaned the structure in memory: removed %d atoms in %d "
+                "residues (%s). The full-structure checks and "
+                "full_minimization below describe the cleaned system, not %s.",
+                cleaning.n_atoms_removed,
+                cleaning.n_residues_removed,
+                ", ".join(sorted(cleaning.removed)),
+                pdb_file,
+            )
+
     unmatched = find_nonstandard_residues(topology, base_forcefield)
     if not unmatched:
         log.info("All residues matched %s - nothing to parameterize.", list(base_forcefield))
-        return ParameterizationResult(forcefield_xml=None)
+        return ParameterizationResult(forcefield_xml=None, cleaning=cleaning)
 
     to_param, skipped = _classify_unmatched(unmatched)
     for name, reason in skipped.items():
@@ -1038,7 +1025,9 @@ def build_forcefield_xml(
         details = "\n".join(f"  {n}: {r}" for n, r in skipped.items())
         raise RuntimeError(f"Unmatched residues were found but none can be auto-parameterized:\n{details}")
     log.info("Residues to parameterize: %s", sorted(to_param))
-    _warn_unused_overrides(to_param, skipped, net_charges, multiplicities, residue_files)
+    _warn_unused_overrides(
+        to_param, skipped, net_charges, multiplicities, residue_files, removed=cleaning.removed if cleaning else ()
+    )
 
     # Fail early if AmberTools is absent.
     _require_executable("antechamber")
@@ -1128,4 +1117,5 @@ def build_forcefield_xml(
         workdir=None if cleanup else str(workdir),
         minimizations=minimizations,
         full_minimization=full_minimization,
+        cleaning=cleaning,
     )

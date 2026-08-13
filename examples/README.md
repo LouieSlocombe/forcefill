@@ -49,6 +49,21 @@ and every step in it is a decision you will face with your own systems:
    "covalently bonded to neighbouring residues", which is the correct answer
    for a mis-drawn ion.)
 
+   This calcium is also why `clean_pdb` keeps structural metals by default.
+   Running it on the prepared structure removes the 62 waters (3425 → 3239
+   atoms) and leaves the Ca²⁺ in place, saying so in `result.retained`:
+
+   ```python
+   from forcefill import clean_pdb
+
+   result = clean_pdb("data/trypsin_ben_prepared.pdb", "data/trypsin_ben_dry.pdb")
+   result.removed  # {'HOH': ('water', 62)}
+   result.retained  # {'CA': 'structural metal retained by default ...'}
+   ```
+
+   Pass `remove_structural_metals=True` if you really do want it gone — but for
+   trypsin you do not: the calcium-binding loop needs it.
+
 With that preparation, `amber14-all.xml + amber14/tip3p.xml` matches
 everything except `BEN`, and the run reduces to:
 

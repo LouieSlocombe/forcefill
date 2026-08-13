@@ -20,11 +20,13 @@ pytest.importorskip("parmed")
 from openmm import Vec3, app, unit
 
 import forcefill
-from forcefill import nonstandard_ffxml
+from forcefill import clean_structure, nonstandard_ffxml
 from tests.helpers import (
     METHANOL_ATOMS,
     METHANOL_XYZ,
     write_broken_gly_pdb,
+    write_ligand_and_glycerol_pdb,
+    write_ligand_and_water_pdb,
     write_methanol_pdb,
     write_methanol_sdf,
     write_water_pdb,
@@ -51,8 +53,15 @@ class StubResidue:
 def test_public_api_resolves():
     for name in forcefill.__all__:
         assert hasattr(forcefill, name), name
-    assert forcefill.__all__ == nonstandard_ffxml.__all__
+    modules = (nonstandard_ffxml, clean_structure)
+    # The package re-exports every module's __all__ and nothing else. Ordering
+    # is ruff's business (RUF022), so compare contents, not sequence.
+    assert set(forcefill.__all__) == {n for m in modules for n in m.__all__}
+    assert len(forcefill.__all__) == len(set(forcefill.__all__))
+    # No name may be exported by both modules, or one would shadow the other.
+    assert set(nonstandard_ffxml.__all__).isdisjoint(clean_structure.__all__)
     assert forcefill.build_forcefield_xml is nonstandard_ffxml.build_forcefield_xml
+    assert forcefill.clean_pdb is clean_structure.clean_pdb
     assert isinstance(forcefill.__version__, str)
 
 
@@ -64,6 +73,7 @@ def test_parameterization_result_defaults():
     assert result.workdir is None
     assert result.minimizations == {}
     assert result.full_minimization is None
+    assert result.cleaning is None
 
 
 def test_minimization_result_energy_change():
@@ -625,6 +635,91 @@ def test_everything_skipped_raises(tmp_path):
     pdb = write_broken_gly_pdb(tmp_path / "g.pdb")
     with pytest.raises(RuntimeError, match="none can be auto-parameterized"):
         forcefill.build_forcefield_xml(pdb, tmp_path / "extras.xml", base_forcefield=())
+
+
+# -- clean_structure=True --------------------------------------------------
+
+
+def test_clean_structure_removes_an_additive_before_parameterizing(fake_ambertools, tmp_path):
+    # A free-standing glycerol is indistinguishable from a ligand, so without
+    # cleaning it goes to antechamber - minutes of AM1-BCC on a cryoprotectant,
+    # with meaningless charges because X-ray additives carry no hydrogens.
+    pdb = write_ligand_and_glycerol_pdb(tmp_path / "in.pdb")
+
+    # validate=False: the fake antechamber returns methanol for every residue,
+    # so GOL's template cannot match its own bond graph. What matters here is
+    # only that GOL reached antechamber at all.
+    dirty = forcefill.build_forcefield_xml(
+        pdb, tmp_path / "dirty.xml", base_forcefield=(), workdir=tmp_path / "wd1", validate=False
+    )
+    assert dirty.parameterized == ["GOL", "LIG"]
+    assert dirty.cleaning is None
+
+    clean = forcefill.build_forcefield_xml(
+        pdb, tmp_path / "clean.xml", base_forcefield=(), workdir=tmp_path / "wd2", clean_structure=True
+    )
+    assert clean.parameterized == ["LIG"]
+    assert clean.cleaning.removed == {"GOL": ("additive", 1)}
+    assert [c["residue"] for c in fake_ambertools["antechamber"]] == ["GOL", "LIG", "LIG"]
+
+
+def test_clean_structure_lets_the_full_checks_run(fake_ambertools, tmp_path):
+    # Crystallographic water that fails to match lands in `skipped`, and a
+    # non-empty `skipped` suppresses the whole-structure validate/minimize.
+    pdb = write_ligand_and_water_pdb(tmp_path / "in.pdb")
+
+    dirty = forcefill.build_forcefield_xml(
+        pdb, tmp_path / "dirty.xml", base_forcefield=(), workdir=tmp_path / "wd1", minimize=True
+    )
+    assert "HOH" in dirty.skipped
+    assert dirty.full_minimization is None
+
+    clean = forcefill.build_forcefield_xml(
+        pdb,
+        tmp_path / "clean.xml",
+        base_forcefield=(),
+        workdir=tmp_path / "wd2",
+        clean_structure=True,
+        minimize=True,
+    )
+    assert clean.skipped == {}
+    assert clean.full_minimization is not None
+    # The numbers describe the cleaned system: methanol alone, not the water too.
+    assert clean.full_minimization.n_atoms == 6
+    assert clean.cleaning.n_atoms_after == 6
+
+
+def test_clean_structure_defaults_off(fake_ambertools, tmp_path):
+    # Deleting atoms is never something the pipeline does unasked.
+    pdb = write_ligand_and_water_pdb(tmp_path / "in.pdb")
+    result = forcefill.build_forcefield_xml(pdb, tmp_path / "extras.xml", base_forcefield=(), workdir=tmp_path / "wd")
+    assert result.cleaning is None
+    assert "HOH" in result.skipped
+
+
+def test_clean_structure_is_reported_on_the_early_return(tmp_path):
+    # A solvent-only PDB cleans down to nothing, so there is no XML to build -
+    # but the caller still needs to hear what happened.
+    pdb = write_water_pdb(tmp_path / "w.pdb")
+    result = forcefill.build_forcefield_xml(pdb, tmp_path / "extras.xml", base_forcefield=(), clean_structure=True)
+    assert result.forcefield_xml is None
+    assert result.cleaning is not None
+    assert result.cleaning.removed == {"HOH": ("water", 1)}
+    assert result.cleaning.n_atoms_after == 0
+
+
+def test_clean_structure_explains_an_override_aimed_at_a_removed_residue(fake_ambertools, tmp_path, caplog):
+    pdb = write_ligand_and_glycerol_pdb(tmp_path / "in.pdb")
+    with caplog.at_level(logging.WARNING):
+        forcefill.build_forcefield_xml(
+            pdb,
+            tmp_path / "extras.xml",
+            base_forcefield=(),
+            workdir=tmp_path / "wd",
+            clean_structure=True,
+            net_charges={"GOL": 0},
+        )
+    assert "was removed from the structure by clean_structure=True" in caplog.text
 
 
 # -- ParmEd assembly against the committed fixtures ------------------------
