@@ -112,6 +112,21 @@ def test_relative_workdir_and_output(tmp_path, monkeypatch):
     assert (tmp_path / "extras.xml").is_file()
 
 
+def test_cleanup_removes_workdir_on_success(tmp_path):
+    pdb = _write_test_pdb(tmp_path / "in.pdb")
+    result = build_forcefield_xml(pdb, tmp_path / "extras.xml", workdir=tmp_path / "wd", cleanup=True)
+    assert result.workdir is None
+    assert result.residue_xmls == {}
+    assert not (tmp_path / "wd").exists()
+    assert Path(result.forcefield_xml).is_file()
+
+
+def test_cleanup_refuses_output_inside_workdir(tmp_path):
+    pdb = _write_test_pdb(tmp_path / "in.pdb")
+    with pytest.raises(ValueError, match="inside the working directory"):
+        build_forcefield_xml(pdb, tmp_path / "wd" / "extras.xml", workdir=tmp_path / "wd", cleanup=True)
+
+
 def test_skipped_residue_still_returns_result(tmp_path):
     # Regression: a skipped residue used to make default validation raise
     # after all the work was done, losing the result.

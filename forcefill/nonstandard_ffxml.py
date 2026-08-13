@@ -187,13 +187,15 @@ class ParameterizationResult:
     #: Path to the combined ffxml covering every parameterized residue
     #: (``None`` when nothing needed parameterizing).
     forcefield_xml: str | None
-    #: Per-residue ffxml files, keyed by residue name.
+    #: Per-residue ffxml files, keyed by residue name (empty after
+    #: ``cleanup=True`` - they live in the working directory).
     residue_xmls: dict[str, str] = field(default_factory=dict)
     #: Residue names that were successfully parameterized.
     parameterized: list[str] = field(default_factory=list)
     #: Residue names that were skipped, mapped to the reason.
     skipped: dict[str, str] = field(default_factory=dict)
-    #: Directory holding intermediate files (per-residue PDB/mol2/frcmod).
+    #: Directory holding intermediate files (per-residue PDB/mol2/frcmod);
+    #: ``None`` when nothing was parameterized or after ``cleanup=True``.
     workdir: str | None = None
 
 
@@ -691,6 +693,7 @@ def build_forcefield_xml(
     atom_type: str = "gaff2",
     charge_method: str = "bcc",
     workdir: PathLike | None = None,
+    cleanup: bool = False,
     validate: bool = True,
     antechamber_args: Sequence[str] = (),
     timeout: float | None = DEFAULT_AMBERTOOLS_TIMEOUT,
@@ -711,7 +714,14 @@ def build_forcefield_xml(
         charge_method: antechamber charge method, default ``"bcc"`` (AM1-BCC).
         workdir: Directory for intermediate files (per-residue PDB, mol2,
             frcmod, per-residue XML). A fresh temporary directory is created
-            and kept if not given; its path is reported in the result.
+            if not given; its path is reported in the result and it is kept
+            unless ``cleanup=True``.
+        cleanup: If True, delete the working directory after a *successful*
+            build. The per-residue XMLs live there, so ``residue_xmls`` comes
+            back empty and ``workdir`` is None; only the combined XML
+            survives. On failure the directory is always kept so ``sqm.out``
+            and the intermediates can be inspected. Refuses to run if
+            *output_xml* itself resolves inside the working directory.
         validate: If True (default), verify that ``base_forcefield +
             output_xml`` can build a System for each parameterized residue on
             its own. When no residues were skipped, additionally verify the
@@ -758,50 +768,66 @@ def build_forcefield_xml(
     workdir = Path(workdir).resolve() if workdir is not None else Path(tempfile.mkdtemp(prefix="nonstandard_ff_"))
     workdir.mkdir(parents=True, exist_ok=True)
     log.info("Intermediate files in %s", workdir)
-
-    mol2_files: dict[str, str] = {}
-    frcmod_files: dict[str, str] = {}
-    residue_xmls: dict[str, str] = {}
-    for name in sorted(to_param):
-        mol2_files[name], frcmod_files[name], residue_xmls[name] = _parameterize_one_residue(
-            name,
-            to_param[name],
-            positions,
-            workdir / name,
-            gaff_dat=gaff_dat,
-            net_charge=net_charges.get(name, 0),
-            multiplicity=multiplicities.get(name, 1),
-            atom_type=atom_type,
-            charge_method=charge_method,
-            antechamber_args=antechamber_args,
-            timeout=timeout,
+    if cleanup and Path(output_xml).resolve().is_relative_to(workdir):
+        raise ValueError(
+            f"cleanup=True would delete the output XML: {output_xml} resolves "
+            f"inside the working directory {workdir}. Write it elsewhere or "
+            "pass cleanup=False."
         )
 
-    combined = assemble_openmm_ffxml(mol2_files, [gaff_dat, *frcmod_files.values()], output_xml)
-    log.info("Wrote combined force-field XML: %s", combined)
-
-    if validate:
-        # Parse the (large) base force field + new XML once; both checks use it.
-        files = [*base_forcefield, combined]
-        forcefield = app.ForceField(*files)
-        _validate_parameterized_residues(to_param, forcefield, files)
-        if skipped:
-            log.warning(
-                "Skipping full-structure validation: %d residue type(s) "
-                "were skipped (%s) and still have no template, so building "
-                "a System for the whole input cannot succeed. Repair or "
-                "parameterize those, then check with "
-                "validate_forcefield_xml().",
-                len(skipped),
-                ", ".join(sorted(skipped)),
+    try:
+        mol2_files: dict[str, str] = {}
+        frcmod_files: dict[str, str] = {}
+        residue_xmls: dict[str, str] = {}
+        for name in sorted(to_param):
+            mol2_files[name], frcmod_files[name], residue_xmls[name] = _parameterize_one_residue(
+                name,
+                to_param[name],
+                positions,
+                workdir / name,
+                gaff_dat=gaff_dat,
+                net_charge=net_charges.get(name, 0),
+                multiplicity=multiplicities.get(name, 1),
+                atom_type=atom_type,
+                charge_method=charge_method,
+                antechamber_args=antechamber_args,
+                timeout=timeout,
             )
-        else:
-            validate_forcefield_xml(topology, combined, base_forcefield, forcefield=forcefield)
+
+        combined = assemble_openmm_ffxml(mol2_files, [gaff_dat, *frcmod_files.values()], output_xml)
+        log.info("Wrote combined force-field XML: %s", combined)
+
+        if validate:
+            # Parse the (large) base force field + new XML once; both checks use it.
+            files = [*base_forcefield, combined]
+            forcefield = app.ForceField(*files)
+            _validate_parameterized_residues(to_param, forcefield, files)
+            if skipped:
+                log.warning(
+                    "Skipping full-structure validation: %d residue type(s) "
+                    "were skipped (%s) and still have no template, so building "
+                    "a System for the whole input cannot succeed. Repair or "
+                    "parameterize those, then check with "
+                    "validate_forcefield_xml().",
+                    len(skipped),
+                    ", ".join(sorted(skipped)),
+                )
+            else:
+                validate_forcefield_xml(topology, combined, base_forcefield, forcefield=forcefield)
+    except Exception:
+        # Never delete on failure: sqm.out and the intermediates are the post-mortem.
+        log.warning("Intermediate files kept for debugging in %s", workdir)
+        raise
+
+    if cleanup:
+        shutil.rmtree(workdir)
+        log.info("Removed working directory %s", workdir)
+        residue_xmls = {}
 
     return ParameterizationResult(
         forcefield_xml=combined,
         residue_xmls=residue_xmls,
         parameterized=sorted(mol2_files),
         skipped=skipped,
-        workdir=str(workdir),
+        workdir=None if cleanup else str(workdir),
     )
