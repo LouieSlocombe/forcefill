@@ -8,6 +8,7 @@ everything here is skipped cleanly when they are not.
 import logging
 import shutil
 import sys
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import pytest
@@ -15,8 +16,19 @@ import pytest
 pytest.importorskip("openmm")
 pytest.importorskip("parmed")
 
+from openmm import Vec3, app, unit
+
 import forcefill
 from forcefill import nonstandard_ffxml
+from tests.helpers import (
+    METHANOL_ATOMS,
+    METHANOL_XYZ,
+    write_broken_gly_pdb,
+    write_methanol_pdb,
+    write_water_pdb,
+)
+
+DATA = Path(__file__).parent / "data"
 
 
 class StubResidue:
@@ -312,3 +324,227 @@ def test_validate_forcefield_xml_reports_failure(tmp_path):
     residue = _methanol_residue()
     with pytest.raises(RuntimeError, match="Validation failed"):
         nonstandard_ffxml.validate_forcefield_xml(residue.chain.topology, xml, base_forcefield=())
+
+
+# -- build_forcefield_xml orchestration (AmberTools faked) -----------------
+
+
+@pytest.fixture
+def fake_ambertools(monkeypatch):
+    """Replace the AmberTools wrappers with fakes that install the committed fixtures."""
+    calls = {"antechamber": [], "parmchk2": []}
+
+    def fake_antechamber(input_pdb, output_mol2, residue_name, **kwargs):
+        calls["antechamber"].append(
+            {"input": str(input_pdb), "output": str(output_mol2), "residue": residue_name, **kwargs}
+        )
+        out = Path(output_mol2)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(DATA / "methanol.mol2", out)
+        return str(out)
+
+    def fake_parmchk2(input_mol2, output_frcmod, atom_type="gaff2", timeout=None):
+        calls["parmchk2"].append(
+            {"input": str(input_mol2), "output": str(output_frcmod), "atom_type": atom_type, "timeout": timeout}
+        )
+        shutil.copyfile(DATA / "methanol.frcmod", output_frcmod)
+        return str(output_frcmod)
+
+    monkeypatch.setattr(nonstandard_ffxml, "_require_executable", lambda name: f"/fake/{name}")
+    # The complete frcmod (parmchk2 -a Y) stands in for gaff2.dat.
+    monkeypatch.setattr(nonstandard_ffxml, "locate_gaff_dat", lambda atom_type="gaff2": str(DATA / "methanol.frcmod"))
+    monkeypatch.setattr(nonstandard_ffxml, "run_antechamber", fake_antechamber)
+    monkeypatch.setattr(nonstandard_ffxml, "run_parmchk2", fake_parmchk2)
+    return calls
+
+
+def test_orchestration_end_to_end_with_fakes(fake_ambertools, tmp_path):
+    pdb = write_methanol_pdb(tmp_path / "in.pdb")
+    wd = tmp_path / "wd"
+    result = forcefill.build_forcefield_xml(
+        pdb,
+        tmp_path / "extras.xml",
+        base_forcefield=(),
+        net_charges={"LIG": -1},
+        multiplicities={"LIG": 3},
+        antechamber_args=("-dr", "no"),
+        workdir=wd,
+        timeout=123,
+    )
+
+    assert result.parameterized == ["LIG"]
+    assert result.skipped == {}
+    assert result.forcefield_xml == str(tmp_path / "extras.xml")
+    assert Path(result.forcefield_xml).is_file()
+    assert Path(result.residue_xmls["LIG"]) == wd / "LIG" / "LIG.xml"
+    assert (wd / "LIG" / "LIG.pdb").is_file()
+    assert result.workdir == str(wd)
+
+    (ante,) = fake_ambertools["antechamber"]
+    assert ante["residue"] == "LIG"
+    assert ante["net_charge"] == -1
+    assert ante["multiplicity"] == 3
+    assert ante["extra_args"] == ("-dr", "no")
+    assert ante["timeout"] == 123
+    (chk,) = fake_ambertools["parmchk2"]
+    assert chk["atom_type"] == "gaff2"
+    assert chk["timeout"] == 123
+
+
+def test_orchestration_cleanup_removes_workdir(fake_ambertools, tmp_path):
+    pdb = write_methanol_pdb(tmp_path / "in.pdb")
+    wd = tmp_path / "wd"
+    result = forcefill.build_forcefield_xml(pdb, tmp_path / "extras.xml", base_forcefield=(), workdir=wd, cleanup=True)
+    assert result.workdir is None
+    assert result.residue_xmls == {}
+    assert not wd.exists()
+    assert Path(result.forcefield_xml).is_file()
+
+
+def test_orchestration_failure_preserves_workdir(fake_ambertools, monkeypatch, tmp_path, caplog):
+    def boom(*args, **kwargs):
+        raise RuntimeError("antechamber exploded")
+
+    monkeypatch.setattr(nonstandard_ffxml, "run_antechamber", boom)
+    pdb = write_methanol_pdb(tmp_path / "in.pdb")
+    wd = tmp_path / "wd"
+    with caplog.at_level(logging.WARNING), pytest.raises(RuntimeError, match="exploded"):
+        forcefill.build_forcefield_xml(pdb, tmp_path / "extras.xml", base_forcefield=(), workdir=wd, cleanup=True)
+    assert wd.exists()
+    assert "kept for debugging" in caplog.text
+
+
+def test_orchestration_default_workdir_reported(fake_ambertools, tmp_path):
+    pdb = write_methanol_pdb(tmp_path / "in.pdb")
+    result = forcefill.build_forcefield_xml(pdb, tmp_path / "extras.xml", base_forcefield=(), validate=False)
+    try:
+        assert result.workdir is not None
+        assert Path(result.workdir).name.startswith("nonstandard_ff_")
+        assert Path(result.residue_xmls["LIG"]).is_file()
+    finally:
+        shutil.rmtree(result.workdir, ignore_errors=True)
+
+
+def test_nothing_to_parameterize_short_circuits(tmp_path):
+    pdb = write_water_pdb(tmp_path / "w.pdb")
+    result = forcefill.build_forcefield_xml(pdb, tmp_path / "extras.xml", base_forcefield=("amber14/tip3p.xml",))
+    assert result.forcefield_xml is None
+    assert result.parameterized == []
+    assert not (tmp_path / "extras.xml").exists()
+
+
+def test_everything_skipped_raises(tmp_path):
+    pdb = write_broken_gly_pdb(tmp_path / "g.pdb")
+    with pytest.raises(RuntimeError, match="none can be auto-parameterized"):
+        forcefill.build_forcefield_xml(pdb, tmp_path / "extras.xml", base_forcefield=())
+
+
+# -- ParmEd assembly against the committed fixtures ------------------------
+
+
+def test_assemble_openmm_ffxml_semantic(tmp_path):
+    out = tmp_path / "sub" / "lig.xml"  # exercises output-directory creation
+    path = nonstandard_ffxml.assemble_openmm_ffxml({"LIG": DATA / "methanol.mol2"}, [DATA / "methanol.frcmod"], out)
+    assert Path(path) == out
+
+    tree = ET.parse(path)
+    residue = tree.find(".//Residues/Residue[@name='LIG']")
+    assert residue is not None
+    atoms = residue.findall("Atom")
+    assert len(atoms) == 6
+    assert abs(sum(float(a.get("charge")) for a in atoms)) < 1e-6  # methanol is neutral
+    assert len(residue.findall("Bond")) == 5
+    for section in ("AtomTypes", "HarmonicBondForce", "HarmonicAngleForce", "NonbondedForce"):
+        assert tree.find(f".//{section}") is not None, section
+
+
+def test_load_residue_template_rejects_multi_residue_mol2(tmp_path):
+    multi = tmp_path / "two.mol2"
+    multi.write_text(
+        "@<TRIPOS>MOLECULE\n"
+        "TWO\n"
+        "4 2 2 0 0\n"
+        "SMALL\n"
+        "NO_CHARGES\n"
+        "\n"
+        "@<TRIPOS>ATOM\n"
+        "      1 O1     0.0000  0.0000  0.0000 oh  1 R1  0.0000\n"
+        "      2 H1     0.9600  0.0000  0.0000 ho  1 R1  0.0000\n"
+        "      3 O2     5.0000  0.0000  0.0000 oh  2 R2  0.0000\n"
+        "      4 H2     5.9600  0.0000  0.0000 ho  2 R2  0.0000\n"
+        "@<TRIPOS>BOND\n"
+        "     1     1     2 1\n"
+        "     2     3     4 1\n"
+        "@<TRIPOS>SUBSTRUCTURE\n"
+        "     1 R1     1 TEMP  0 **** ****  0 ROOT\n"
+        "     2 R2     3 TEMP  0 **** ****  0 ROOT\n"
+    )
+    with pytest.raises(ValueError, match="contains 2 residues"):
+        nonstandard_ffxml._load_residue_template(multi, "X")
+
+
+def test_load_residue_template_rejects_non_template(tmp_path):
+    with pytest.raises(TypeError, match="ResidueTemplate"):
+        nonstandard_ffxml._load_residue_template(DATA / "methanol.frcmod", "X")
+
+
+# -- locate_gaff_dat -------------------------------------------------------
+
+
+def test_locate_gaff_dat_search_order(monkeypatch, tmp_path):
+    roots = {key: tmp_path / key for key in ("amberhome", "conda", "which")}
+    dats = {}
+    for key, root in roots.items():
+        parm = root / "dat" / "leap" / "parm"
+        parm.mkdir(parents=True)
+        dats[key] = parm / "gaff2.dat"
+        dats[key].write_text(key)
+    monkeypatch.setenv("AMBERHOME", str(roots["amberhome"]))
+    monkeypatch.setenv("CONDA_PREFIX", str(roots["conda"]))
+    monkeypatch.setattr(shutil, "which", lambda name: str(roots["which"] / "bin" / "antechamber"))
+
+    assert nonstandard_ffxml.locate_gaff_dat() == str(dats["amberhome"])
+    dats["amberhome"].unlink()
+    assert nonstandard_ffxml.locate_gaff_dat() == str(dats["conda"])
+    dats["conda"].unlink()
+    assert nonstandard_ffxml.locate_gaff_dat() == str(dats["which"])
+
+
+def test_locate_gaff_dat_error_lists_candidates(monkeypatch, tmp_path):
+    monkeypatch.delenv("AMBERHOME", raising=False)
+    monkeypatch.setenv("CONDA_PREFIX", str(tmp_path))
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+    with pytest.raises(FileNotFoundError, match="AMBERHOME") as excinfo:
+        nonstandard_ffxml.locate_gaff_dat("gaff")
+    assert str(tmp_path / "dat" / "leap" / "parm" / "gaff.dat") in str(excinfo.value)
+
+
+# -- extract_residue_to_pdb ------------------------------------------------
+
+
+def test_extract_residue_to_pdb_roundtrip(tmp_path):
+    residue = _methanol_residue()
+    positions = unit.Quantity([Vec3(*p) for p in METHANOL_XYZ], unit.angstrom)
+    out = tmp_path / "LIG.pdb"
+    path = nonstandard_ffxml.extract_residue_to_pdb(positions, residue, out)
+    assert Path(path) == out
+
+    reread = app.PDBFile(path)
+    atoms = list(reread.topology.atoms())
+    assert [a.name for a in atoms] == [name for name, _ in METHANOL_ATOMS]
+    assert [a.element.symbol for a in atoms] == ["C", "O", "H", "H", "H", "H"]
+    assert reread.topology.getNumBonds() == 5  # CONECT records survive
+    new = reread.positions.value_in_unit(unit.angstrom)
+    for (x, y, z), b in zip(METHANOL_XYZ, new, strict=True):
+        assert max(abs(x - b.x), abs(y - b.y), abs(z - b.z)) < 1e-2
+
+
+def test_extract_residue_warns_on_missing_element(tmp_path, caplog):
+    top = app.Topology()
+    chain = top.addChain("A")
+    res = top.addResidue("UNK", chain)
+    top.addAtom("X1", None, res)
+    positions = unit.Quantity([Vec3(0.0, 0.0, 0.0)], unit.angstrom)
+    with caplog.at_level(logging.WARNING):
+        nonstandard_ffxml.extract_residue_to_pdb(positions, next(top.residues()), tmp_path / "unk.pdb")
+    assert "no element" in caplog.text
