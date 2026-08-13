@@ -161,3 +161,8 @@ cython_debug/
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 .idea/
 .vscode/
+
+# examples: downloaded input and generated outputs
+examples/data/3PTB.pdb
+examples/ben_ff.xml
+examples/wd/

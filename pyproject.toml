@@ -109,6 +109,10 @@ ignore = [
     "ISC001",
 ]
 
+[tool.ruff.lint.per-file-ignores]
+# The runnable examples talk to the user through print().
+"examples/*" = ["T20"]
+
 [tool.ruff.lint.isort]
 known-first-party = ["forcefill"]
 
