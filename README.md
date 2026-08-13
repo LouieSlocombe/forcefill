@@ -92,7 +92,27 @@ system = ff.createSystem(pdb.topology)
 
 `result` also reports the per-residue XML files (`result.residue_xmls`), the
 skip reasons (`result.skipped`), and the directory holding every intermediate
-file (`result.workdir`) for inspection.
+file (`result.workdir`) for inspection (pass `cleanup=True` to remove it on
+success).
+
+### Supplying the ligand as drawn (SDF/MOL2)
+
+Extracting a ligand from a PDB forces antechamber to re-perceive bond orders
+from geometry — a classic source of silently wrong atom types for aromatics
+and charged groups. If you have the ligand as an SDF or MOL2 with explicit
+bonds and protonation, pass it directly:
+
+```python
+result = build_forcefield_xml(
+    "complex.pdb",
+    "extras.xml",
+    residue_files={"LIG": "lig.sdf"},  # used instead of PDB extraction
+)
+```
+
+The file must contain the same atoms and bonds (including hydrogens) as the
+residue in the PDB — the generated template is still validated against the
+PDB's bond graph.
 
 ### Things to get right
 
@@ -130,9 +150,6 @@ Style is enforced by ruff (`pip install -e '.[dev]' && pre-commit install`).
 
 ## Roadmap
 
-- Direct ligand-file input (SDF/MOL2) so antechamber sees the drawn bond
-  orders instead of re-perceiving them from PDB geometry.
-- A worked example under `examples/`.
 - A `forcefill` command-line interface.
 - Caching, so re-runs into the same workdir skip finished antechamber jobs.
 

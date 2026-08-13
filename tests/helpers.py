@@ -1,5 +1,7 @@
 """Shared in-memory structure builders for the tests (no AmberTools required)."""
 
+from pathlib import Path
+
 from openmm import Vec3, app, unit
 from openmm.app import element
 
@@ -81,6 +83,25 @@ def write_broken_gly_pdb(path):
     top = app.Topology()
     xyz = add_broken_gly_residue(top)
     return _write_pdb(path, top, xyz)
+
+
+def write_methanol_sdf(path):
+    """Write methanol as a V2000 SDF with explicit bonds, matching METHANOL_XYZ."""
+    symbols = [elem.symbol for _, elem in METHANOL_ATOMS]
+    lines = [
+        "methanol",
+        "  forcefill",
+        "",
+        f"{len(symbols):3d}{len(METHANOL_BONDS):3d}  0  0  0  0  0  0  0  0999 V2000",
+    ]
+    for (x, y, z), sym in zip(METHANOL_XYZ, symbols, strict=True):
+        lines.append(f"{x:10.4f}{y:10.4f}{z:10.4f} {sym:<3} 0  0  0  0  0  0  0  0  0  0  0  0")
+    index = {name: i + 1 for i, (name, _) in enumerate(METHANOL_ATOMS)}
+    for a, b in METHANOL_BONDS:
+        lines.append(f"{index[a]:3d}{index[b]:3d}  1  0")
+    lines += ["M  END", "$$$$", ""]
+    Path(path).write_text("\n".join(lines))
+    return path
 
 
 def write_water_pdb(path):

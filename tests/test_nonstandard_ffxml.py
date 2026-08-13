@@ -25,6 +25,7 @@ from tests.helpers import (
     METHANOL_XYZ,
     write_broken_gly_pdb,
     write_methanol_pdb,
+    write_methanol_sdf,
     write_water_pdb,
 )
 
@@ -172,6 +173,26 @@ def test_run_antechamber_purge_scratch_flag(monkeypatch, tmp_path):
     assert cmd_keep[cmd_keep.index("-pf") + 1] == "n"
 
 
+def test_run_antechamber_infers_input_format(monkeypatch, tmp_path):
+    recorder = _RunRecorder()
+    monkeypatch.setattr(nonstandard_ffxml, "_require_executable", lambda name: "antechamber")
+    monkeypatch.setattr(nonstandard_ffxml, "_run", recorder)
+
+    nonstandard_ffxml.run_antechamber(tmp_path / "lig.sdf", tmp_path / "a.mol2", "LIG")
+    nonstandard_ffxml.run_antechamber(tmp_path / "lig.mol2", tmp_path / "b.mol2", "LIG")
+    nonstandard_ffxml.run_antechamber(tmp_path / "lig.xyz", tmp_path / "c.mol2", "LIG", input_format="mol2")
+
+    formats = [cmd[cmd.index("-fi") + 1] for cmd, _ in recorder.calls]
+    assert formats == ["sdf", "mol2", "mol2"]
+
+
+def test_run_antechamber_unknown_suffix_raises(monkeypatch, tmp_path):
+    monkeypatch.setattr(nonstandard_ffxml, "_require_executable", lambda name: "antechamber")
+    monkeypatch.setattr(nonstandard_ffxml, "_run", lambda *args, **kwargs: None)
+    with pytest.raises(ValueError, match="input format"):
+        nonstandard_ffxml.run_antechamber(tmp_path / "lig.xyz", tmp_path / "out.mol2", "LIG")
+
+
 def test_run_antechamber_missing_output_raises(monkeypatch, tmp_path):
     monkeypatch.setattr(nonstandard_ffxml, "_require_executable", lambda name: "antechamber")
     monkeypatch.setattr(nonstandard_ffxml, "_run", lambda cmd, cwd, **kw: None)  # writes nothing
@@ -229,12 +250,14 @@ def test_warn_unused_overrides(caplog):
             skipped,
             net_charges={"lig": -1, "ZN": 2, "LIG": 0},
             multiplicities={"XYZ": 3},
+            residue_files={"NOPE": "lig.sdf", "LIG": "ok.sdf"},
         )
-    assert len(caplog.records) == 3  # 'lig', 'ZN', 'XYZ'; 'LIG' is fine
+    assert len(caplog.records) == 4  # 'lig', 'ZN', 'XYZ', 'NOPE'; 'LIG' is fine
     text = caplog.text
     assert "'lig'" in text and "spelling" in text
     assert "'ZN'" in text and "skipped" in text
     assert "'XYZ'" in text
+    assert "residue_files['NOPE']" in text
 
 
 # -- per-residue validation ------------------------------------------------
@@ -389,6 +412,19 @@ def test_orchestration_end_to_end_with_fakes(fake_ambertools, tmp_path):
     (chk,) = fake_ambertools["parmchk2"]
     assert chk["atom_type"] == "gaff2"
     assert chk["timeout"] == 123
+
+
+def test_orchestration_residue_files_bypass_extraction(fake_ambertools, tmp_path):
+    pdb = write_methanol_pdb(tmp_path / "in.pdb")
+    sdf = write_methanol_sdf(tmp_path / "lig.sdf")
+    wd = tmp_path / "wd"
+    result = forcefill.build_forcefield_xml(
+        pdb, tmp_path / "extras.xml", base_forcefield=(), workdir=wd, residue_files={"LIG": sdf}
+    )
+    assert result.parameterized == ["LIG"]
+    (ante,) = fake_ambertools["antechamber"]
+    assert ante["input"] == str(sdf)
+    assert not (wd / "LIG" / "LIG.pdb").exists()  # extraction skipped
 
 
 def test_orchestration_cleanup_removes_workdir(fake_ambertools, tmp_path):

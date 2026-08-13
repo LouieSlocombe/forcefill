@@ -109,6 +109,15 @@ _ATOM_TYPES = ("gaff", "gaff2")
 #: bypassing the check if your antechamber knows more.
 _CHARGE_METHODS = ("bcc", "abcg2", "gas", "mul", "cm1", "cm2", "esp", "resp", "rc", "wc", "dc")
 
+#: File suffix -> antechamber -fi format, for run_antechamber's inference.
+_ANTECHAMBER_FORMATS = {
+    ".pdb": "pdb",
+    ".mol2": "mol2",
+    ".sdf": "sdf",
+    ".sd": "sdf",
+    ".mol": "mdl",
+}
+
 #: Residue names the base force fields already know. Unmatched residues with
 #: these names are almost always incomplete structures, not new chemistry.
 _STANDARD_RESIDUES = frozenset(
@@ -273,14 +282,19 @@ def _warn_unused_overrides(
     skipped: Mapping[str, str],
     net_charges: Mapping[str, int],
     multiplicities: Mapping[str, int],
+    residue_files: Mapping[str, PathLike] | None = None,
 ) -> None:
-    """Warn about net_charges/multiplicities keys that will have no effect.
+    """Warn about net_charges/multiplicities/residue_files keys with no effect.
 
     A typo'd or case-mismatched key silently leaves the defaults (net
-    charge 0, multiplicity 1), which yields plausible but wrong AM1-BCC
-    charges - the worst failure mode.
+    charge 0, multiplicity 1, PDB extraction), which yields plausible but
+    wrong AM1-BCC charges - the worst failure mode.
     """
-    for label, mapping in (("net_charges", net_charges), ("multiplicities", multiplicities)):
+    for label, mapping in (
+        ("net_charges", net_charges),
+        ("multiplicities", multiplicities),
+        ("residue_files", residue_files or {}),
+    ):
         for key in mapping:
             if key in to_param:
                 continue
@@ -405,7 +419,7 @@ def _run(
 
 
 def run_antechamber(
-    input_pdb: PathLike,
+    input_file: PathLike,
     output_mol2: PathLike,
     residue_name: str,
     net_charge: int = 0,
@@ -415,26 +429,37 @@ def run_antechamber(
     extra_args: Sequence[str] = (),
     purge_scratch: bool = True,
     timeout: float | None = DEFAULT_AMBERTOOLS_TIMEOUT,
+    input_format: str | None = None,
 ) -> str:
     """Assign atom types and partial charges with antechamber -> mol2.
 
-    ``purge_scratch=False`` keeps antechamber's ANTECHAMBER_*/sqm scratch files
-    after a successful run (they always survive a failed one), which is the way
-    to audit suspicious charges. ``timeout`` is in seconds.
+    *input_file* may be a PDB or a ligand file with explicit bonds (SDF/MOL2);
+    ``input_format`` (antechamber ``-fi``) is inferred from the suffix when not
+    given. ``purge_scratch=False`` keeps antechamber's ANTECHAMBER_*/sqm
+    scratch files after a successful run (they always survive a failed one),
+    which is the way to audit suspicious charges. ``timeout`` is in seconds.
     """
     _check_choice(atom_type, _ATOM_TYPES, "atom_type")
     _check_choice(charge_method, _CHARGE_METHODS, "charge_method")
     exe = _require_executable("antechamber")
     # antechamber runs with cwd set to the output directory (it scatters
     # scratch files there); resolve both paths so relative ones survive.
-    input_pdb = Path(input_pdb).resolve()
+    input_file = Path(input_file).resolve()
     output_mol2 = Path(output_mol2).resolve()
+    if input_format is None:
+        suffix = input_file.suffix.lower()
+        input_format = _ANTECHAMBER_FORMATS.get(suffix)
+        if input_format is None:
+            raise ValueError(
+                f"Cannot infer the antechamber input format from {input_file.name!r} "
+                f"(known suffixes: {sorted(_ANTECHAMBER_FORMATS)}); pass input_format explicitly."
+            )
     cmd = [
         exe,
         "-i",
-        str(input_pdb),
+        str(input_file),
         "-fi",
-        "pdb",
+        input_format,
         "-o",
         str(output_mol2),
         "-fo",
@@ -594,7 +619,9 @@ def _validate_parameterized_residues(
             f"residue {name} on its own from {files}.\n"
             f"OpenMM said: {exc}\n"
             "The generated template does not match the residue's bond "
-            "graph, or parameters are missing."
+            "graph, or parameters are missing. If you supplied this residue "
+            "via residue_files, its atoms/bonds (including hydrogens) must "
+            "match the residue in the PDB exactly."
         ) from exc
     log.info("Validation OK: per-residue Systems built for %s from %s", sorted(residues), files)
 
@@ -646,27 +673,34 @@ def _parameterize_one_residue(
     charge_method: str,
     antechamber_args: Sequence[str],
     timeout: float | None,
+    input_file: PathLike | None = None,
 ) -> tuple[str, str, str]:
     """Run one residue through extract -> antechamber -> parmchk2 -> per-residue XML.
 
-    Returns ``(mol2_path, frcmod_path, per_residue_xml_path)``, all inside *res_dir*.
+    A user-supplied *input_file* (SDF/MOL2 with explicit bonds) replaces the
+    PDB extraction step. Returns ``(mol2_path, frcmod_path,
+    per_residue_xml_path)``, all inside *res_dir*.
     """
     res_dir.mkdir(parents=True, exist_ok=True)
 
-    n_hydrogens = sum(1 for a in residue.atoms() if a.element is not None and a.element.symbol == "H")
-    n_heavy = sum(1 for _ in residue.atoms()) - n_hydrogens
-    if n_hydrogens == 0 and n_heavy > 1:
-        log.warning(
-            "Residue %s contains no hydrogens; AM1-BCC charges will be "
-            "wrong unless the molecule really has none. Add explicit "
-            "hydrogens to the ligand before parameterizing.",
-            name,
-        )
+    if input_file is None:
+        n_hydrogens = sum(1 for a in residue.atoms() if a.element is not None and a.element.symbol == "H")
+        n_heavy = sum(1 for _ in residue.atoms()) - n_hydrogens
+        if n_hydrogens == 0 and n_heavy > 1:
+            log.warning(
+                "Residue %s contains no hydrogens; AM1-BCC charges will be "
+                "wrong unless the molecule really has none. Add explicit "
+                "hydrogens to the ligand before parameterizing.",
+                name,
+            )
+        antechamber_input: PathLike = extract_residue_to_pdb(positions, residue, res_dir / f"{name}.pdb")
+    else:
+        log.info("Using the supplied ligand file for %s: %s", name, input_file)
+        antechamber_input = input_file
 
-    res_pdb = extract_residue_to_pdb(positions, residue, res_dir / f"{name}.pdb")
     log.info("antechamber: %s (net charge %+d, %s/%s)", name, net_charge, atom_type, charge_method)
     mol2 = run_antechamber(
-        res_pdb,
+        antechamber_input,
         res_dir / f"{name}.mol2",
         name,
         net_charge=net_charge,
@@ -690,6 +724,7 @@ def build_forcefield_xml(
     base_forcefield: Sequence[str] = DEFAULT_BASE_FORCEFIELD,
     net_charges: Mapping[str, int] | None = None,
     multiplicities: Mapping[str, int] | None = None,
+    residue_files: Mapping[str, PathLike] | None = None,
     atom_type: str = "gaff2",
     charge_method: str = "bcc",
     workdir: PathLike | None = None,
@@ -710,6 +745,14 @@ def build_forcefield_xml(
             residue. Getting this right is essential for sensible AM1-BCC
             charges.
         multiplicities: ``{residue_name: spin_multiplicity}``; defaults to 1.
+        residue_files: ``{residue_name: ligand_file}`` - parameterize these
+            residues from the given SDF/MOL2 (or other antechamber-readable)
+            file instead of extracting them from the PDB. A file with explicit
+            bond orders and protonation as drawn avoids antechamber having to
+            re-perceive them from PDB geometry, a classic source of silently
+            wrong atom types. The file must contain the *same* atoms and bonds
+            (including hydrogens) as the residue in the PDB, or validation
+            fails: the template is still matched against the PDB's bond graph.
         atom_type: ``"gaff2"`` (default) or ``"gaff"``.
         charge_method: antechamber charge method, default ``"bcc"`` (AM1-BCC).
         workdir: Directory for intermediate files (per-residue PDB, mol2,
@@ -741,6 +784,7 @@ def build_forcefield_xml(
     _check_choice(charge_method, _CHARGE_METHODS, "charge_method")
     net_charges = dict(net_charges or {})
     multiplicities = dict(multiplicities or {})
+    residue_files = dict(residue_files or {})
 
     pdb = app.PDBFile(str(pdb_file))
     topology, positions = pdb.topology, pdb.positions
@@ -757,7 +801,7 @@ def build_forcefield_xml(
         details = "\n".join(f"  {n}: {r}" for n, r in skipped.items())
         raise RuntimeError(f"Unmatched residues were found but none can be auto-parameterized:\n{details}")
     log.info("Residues to parameterize: %s", sorted(to_param))
-    _warn_unused_overrides(to_param, skipped, net_charges, multiplicities)
+    _warn_unused_overrides(to_param, skipped, net_charges, multiplicities, residue_files)
 
     # Fail early if AmberTools is absent.
     _require_executable("antechamber")
@@ -792,6 +836,7 @@ def build_forcefield_xml(
                 charge_method=charge_method,
                 antechamber_args=antechamber_args,
                 timeout=timeout,
+                input_file=residue_files.get(name),
             )
 
         combined = assemble_openmm_ffxml(mol2_files, [gaff_dat, *frcmod_files.values()], output_xml)

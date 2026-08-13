@@ -16,7 +16,7 @@ from openmm import app
 
 from forcefill import build_forcefield_xml
 from forcefill.nonstandard_ffxml import locate_gaff_dat
-from tests.helpers import write_methanol_pdb
+from tests.helpers import write_methanol_pdb, write_methanol_sdf
 
 
 def _ambertools_available():
@@ -59,6 +59,18 @@ def test_relative_workdir_and_output(tmp_path, monkeypatch):
     assert result.parameterized == ["LIG"]
     assert Path(result.workdir).is_absolute()
     assert (tmp_path / "extras.xml").is_file()
+
+
+def test_methanol_from_sdf_end_to_end(tmp_path):
+    # residue_files: antechamber reads the drawn SDF instead of the extracted PDB.
+    pdb = write_methanol_pdb(tmp_path / "in.pdb")
+    sdf = write_methanol_sdf(tmp_path / "lig.sdf")
+    result = build_forcefield_xml(pdb, tmp_path / "extras.xml", workdir=tmp_path / "wd", residue_files={"LIG": sdf})
+    assert result.parameterized == ["LIG"]
+    assert not (tmp_path / "wd" / "LIG" / "LIG.pdb").exists()
+
+    ff = app.ForceField("amber14-all.xml", "amber14/tip3p.xml", result.forcefield_xml)
+    ff.createSystem(app.PDBFile(str(pdb)).topology)
 
 
 def test_cleanup_removes_workdir_on_success(tmp_path):
