@@ -1,0 +1,36 @@
+# Local mirror of the CI lint gate (.github/workflows/ci.yml), so drift is caught
+# before the commit rather than after the push.
+#
+#   pip install -e '.[dev]' && pre-commit install     # once, per checkout
+#   pre-commit run --all-files                        # check the whole tree
+#
+# The ruff rev below must match the version pinned in .github/workflows/ci.yml and
+# in the `dev` extra of pyproject.toml. ruff's formatter output can change between
+# releases, so a skew is what lets a locally-clean tree fail the CI format gate.
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.16.2
+    hooks:
+      - id: ruff-check
+        args: [--fix]
+      - id: ruff-format
+
+  # Whitespace hygiene for the files ruff never sees (YAML, TOML, Markdown).
+  #
+  # tests/data/ is excluded deliberately: it holds byte-for-byte AmberTools
+  # reference output (mol2/frcmod/dat) that the assembly tests read. Letting a
+  # whitespace hook rewrite those would silently change what the tests are
+  # tested against.
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+        exclude: ^tests/data/
+      - id: end-of-file-fixer
+        exclude: ^tests/data/
+      - id: mixed-line-ending
+        args: [--fix=lf]
+        exclude: ^tests/data/
+      - id: check-yaml
+      - id: check-toml
+      - id: check-merge-conflict

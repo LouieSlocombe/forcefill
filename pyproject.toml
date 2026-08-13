@@ -65,3 +65,52 @@ source = ["forcefill"]
 exclude_also = [
     "if TYPE_CHECKING:",
 ]
+
+# Style is machine-enforced end to end: `ruff format` owns layout, `ruff check` owns
+# what the formatter cannot express. Both gate CI (.github/workflows/ci.yml) and run
+# as pre-commit hooks (.pre-commit-config.yaml); the ruff version is pinned in all
+# three places and in the `dev` extra above — keep them in step.
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+# These are ruff's current defaults, so pinning them changes nothing today. The
+# section exists so that a future ruff release which changes a default cannot
+# silently reformat the whole tree.
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "lf"
+skip-magic-trailing-comma = false
+docstring-code-format = true
+
+[tool.ruff.lint]
+select = [
+    "F", "E", "W", "I", "N", "UP", "B", "A", "C4", "PIE", "SIM", "RUF", "FURB",
+    "PLE", "PLW", "BLE", "T20", "G", "LOG",
+    # Docstring shape, Google convention (configured below). Docstring *presence*
+    # is deliberately not checked here — see the D1xx ignores.
+    "D",
+    # Consistency guards: each was at zero violations when adopted, so they cost
+    # nothing to keep and stop the styles they forbid from creeping back in.
+    "ICN", "TID", "PYI", "RSE", "FA", "PGH", "DTZ", "EXE", "INT", "ISC", "ERA",
+    "PLR2044",
+    # Redundancy the formatter cannot see: `else` after `return`/`raise`, assign-
+    # then-return, manual list-building loops, and similar.
+    "RET", "PERF", "PLR1714", "PLR5501", "PLR1711", "PLC1802",
+]
+ignore = [
+    # Docstring presence is not enforced wholesale: the public API is fully
+    # documented already; requiring docstrings on every test function and tiny
+    # private helper would add noise, not information.
+    "D100", "D101", "D102", "D103", "D104", "D105", "D106", "D107",
+    # On ruff's own formatter-incompatible list. Implicit concatenation across
+    # lines is how the long error-message templates stay under line-length.
+    "ISC001",
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["forcefill"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
