@@ -570,18 +570,18 @@ def assemble_openmm_ffxml(
 
 def _validate_parameterized_residues(
     residues: Mapping[str, app.topology.Residue],
-    xml_file: PathLike,
-    base_forcefield: Sequence[str],
+    forcefield: app.ForceField,
+    files: Sequence[str],
 ) -> None:
-    """Check that ``base_forcefield + xml_file`` builds a System for each residue on its own.
+    """Check that *forcefield* (built from *files*) makes a System for each residue on its own.
 
     This checks exactly what was produced: that each generated template
     matches the residue's original bond graph and that no parameters are
     missing - independently of whether the rest of the input structure is
-    complete. Raises RuntimeError on the first residue that fails.
+    complete. Raises RuntimeError on the first residue that fails. *files*
+    only labels the error message.
     """
-    files = [*base_forcefield, str(xml_file)]
-    forcefield = app.ForceField(*files)
+    files = list(files)
     name = None
     try:
         for name in sorted(residues):
@@ -601,11 +601,18 @@ def validate_forcefield_xml(
     topology: app.Topology,
     xml_file: PathLike,
     base_forcefield: Sequence[str] = DEFAULT_BASE_FORCEFIELD,
+    *,
+    forcefield: app.ForceField | None = None,
 ) -> None:
-    """Raise RuntimeError unless ``base_forcefield + xml_file`` can build a System for *topology*."""
+    """Raise RuntimeError unless ``base_forcefield + xml_file`` can build a System for *topology*.
+
+    A pre-built *forcefield* - which must have been constructed from
+    ``base_forcefield + xml_file`` - skips re-parsing the XML files.
+    """
     files = [*base_forcefield, str(xml_file)]
     try:
-        forcefield = app.ForceField(*files)
+        if forcefield is None:
+            forcefield = app.ForceField(*files)
         forcefield.createSystem(topology)
     except Exception as exc:
         raise RuntimeError(
@@ -748,7 +755,10 @@ def build_forcefield_xml(
     log.info("Wrote combined force-field XML: %s", combined)
 
     if validate:
-        _validate_parameterized_residues(to_param, combined, base_forcefield)
+        # Parse the (large) base force field + new XML once; both checks use it.
+        files = [*base_forcefield, combined]
+        forcefield = app.ForceField(*files)
+        _validate_parameterized_residues(to_param, forcefield, files)
         if skipped:
             log.warning(
                 "Skipping full-structure validation: %d residue type(s) "
@@ -760,7 +770,7 @@ def build_forcefield_xml(
                 ", ".join(sorted(skipped)),
             )
         else:
-            validate_forcefield_xml(topology, combined, base_forcefield)
+            validate_forcefield_xml(topology, combined, base_forcefield, forcefield=forcefield)
 
     return ParameterizationResult(
         forcefield_xml=combined,

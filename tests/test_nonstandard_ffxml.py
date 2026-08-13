@@ -275,21 +275,40 @@ _LIG_TEMPLATE_XML = """<ForceField>
 """
 
 
-def test_validate_parameterized_residues_ok(tmp_path):
+def _write_lig_xml(tmp_path, complete=True):
+    from openmm import app
+
     xml = tmp_path / "lig.xml"
     xml.write_text(
         _LIG_TEMPLATE_XML.format(
-            h4_atom='<Atom name="H4" type="XH" charge="0.1"/>',
-            h4_bond='<Bond atomName1="O1" atomName2="H4"/>',
+            h4_atom='<Atom name="H4" type="XH" charge="0.1"/>' if complete else "",
+            h4_bond='<Bond atomName1="O1" atomName2="H4"/>' if complete else "",
         )
     )
-    nonstandard_ffxml._validate_parameterized_residues({"LIG": _methanol_residue()}, xml, base_forcefield=())
+    return xml, app.ForceField(str(xml))
+
+
+def test_validate_parameterized_residues_ok(tmp_path):
+    xml, ff = _write_lig_xml(tmp_path)
+    nonstandard_ffxml._validate_parameterized_residues({"LIG": _methanol_residue()}, ff, [str(xml)])
 
 
 def test_validate_parameterized_residues_detects_mismatch(tmp_path):
     # Template lacks the hydroxyl hydrogen -> graph mismatch -> no template
     # matches the actual residue.
-    xml = tmp_path / "lig.xml"
-    xml.write_text(_LIG_TEMPLATE_XML.format(h4_atom="", h4_bond=""))
+    xml, ff = _write_lig_xml(tmp_path, complete=False)
     with pytest.raises(RuntimeError, match="residue LIG"):
-        nonstandard_ffxml._validate_parameterized_residues({"LIG": _methanol_residue()}, xml, base_forcefield=())
+        nonstandard_ffxml._validate_parameterized_residues({"LIG": _methanol_residue()}, ff, [str(xml)])
+
+
+def test_validate_forcefield_xml_accepts_prebuilt_forcefield(tmp_path):
+    xml, ff = _write_lig_xml(tmp_path)
+    residue = _methanol_residue()
+    nonstandard_ffxml.validate_forcefield_xml(residue.chain.topology, xml, base_forcefield=(), forcefield=ff)
+
+
+def test_validate_forcefield_xml_reports_failure(tmp_path):
+    xml, _ff = _write_lig_xml(tmp_path, complete=False)
+    residue = _methanol_residue()
+    with pytest.raises(RuntimeError, match="Validation failed"):
+        nonstandard_ffxml.validate_forcefield_xml(residue.chain.topology, xml, base_forcefield=())
