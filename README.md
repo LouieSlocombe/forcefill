@@ -143,18 +143,14 @@ conda install -c conda-forge openmm parmed ambertools
 pip install forcefill
 ```
 
-Requires Python ≥ 3.10, `openmm >= 7.6`, `parmed >= 3.4`, and the AmberTools
-executables (`antechamber`, `parmchk2`) on `PATH` at run time.
+Requires Python ≥ 3.10 and, at import time, `openmm >= 7.6`, `parmed >= 3.4`,
+`rdkit`, `openff-toolkit >= 0.16` and `openmmforcefields >= 0.14`. All five are
+ordinary dependencies — there are no extras to pick and nothing is imported
+lazily.
 
-Two optional stacks, both imported lazily so the base install never needs them:
-
-| Want | Install |
-|---|---|
-| SMILES input, sturdier file readers | `conda install -c conda-forge rdkit` |
-| `backend="smirnoff"` | `conda install -c conda-forge openff-toolkit openmmforcefields` |
-
-or as pip extras: `pip install 'forcefill[rdkit]'`, `'forcefill[smirnoff]'`,
-`'forcefill[all]'`. The `environment.yml` above already has both.
+AmberTools is the exception, because it is not a Python package: the
+`antechamber` and `parmchk2` executables must be on `PATH` at run time for the
+`gaff` backend. `backend="smirnoff"` does not need them.
 
 ## Quickstart
 
@@ -223,7 +219,7 @@ result = build_forcefield_xml(
 )
 ```
 
-A SMILES works too (needs RDKit). When the residue is also in the structure,
+A SMILES works too. When the residue is also in the structure,
 the coordinates stay as deposited and only the bond orders come from the
 SMILES — the crystal geometry is better than anything embedding produces:
 
@@ -269,7 +265,7 @@ silently picking a winner.
 | | `backend="gaff"` (default) | `backend="smirnoff"` |
 |---|---|---|
 | Parameters | GAFF/GAFF2 atom types, AM1-BCC charges | OpenFF Sage, SMARTS-matched |
-| Needs | AmberTools on `PATH` | `openff-toolkit`, `openmmforcefields` |
+| Needs | AmberTools on `PATH` | nothing beyond the install |
 | Ligand source | PDB residue, SDF, MOL2 or SMILES | **SDF, MOL2 or SMILES only** |
 
 SMIRNOFF assigns parameters by matching SMARTS against the chemical graph, so it

@@ -1,8 +1,8 @@
 """Tests for the SMIRNOFF backend.
 
 These run openff-toolkit and openmmforcefields for real - there is no useful way
-to fake the charge assignment - so they carry the ``smirnoff`` marker and skip
-when the stack is not installed.
+to fake the charge assignment - so they carry the ``smirnoff`` marker and are
+deselected along with ``integration`` when you want only the fast tests.
 """
 
 import xml.etree.ElementTree as ET
@@ -17,29 +17,16 @@ from openmm import app
 
 from forcefill import LigandSpec, build_ligand_xml
 from forcefill._spec import ResolvedSpec
+from forcefill.smirnoff import installed_smirnoff_forcefields, smirnoff_residue_ffxml
+from tests.helpers import write_methanol_pdb
 
 EXAMPLES = Path(__file__).parent.parent / "examples" / "data"
 BENZAMIDINIUM = EXAMPLES / "benzamidinium.sdf"
 
-
-def _has_openff() -> bool:
-    try:
-        import openff.toolkit  # noqa: F401
-        import openmmforcefields  # noqa: F401
-    except ImportError:
-        return False
-    return True
-
-
-pytestmark = [
-    pytest.mark.smirnoff,
-    pytest.mark.skipif(not _has_openff(), reason="openff-toolkit/openmmforcefields are not installed"),
-]
+pytestmark = pytest.mark.smirnoff
 
 
 def test_installed_forcefields_are_reported():
-    from forcefill.smirnoff import installed_smirnoff_forcefields
-
     installed = installed_smirnoff_forcefields()
     assert installed
     assert all(name.startswith("openff-") for name in installed)
@@ -48,8 +35,6 @@ def test_installed_forcefields_are_reported():
 def test_residue_template_is_renamed(tmp_path):
     # openmmforcefields names the template with a mapped SMILES; a 60-character
     # SMILES in every error message is useless.
-    from forcefill.smirnoff import smirnoff_residue_ffxml
-
     xml = smirnoff_residue_ffxml(ResolvedSpec(name="MOL", smiles="CO"), tmp_path / "MOL.xml")
     names = [r.get("name") for r in ET.parse(xml).getroot().findall("./Residues/Residue")]
     assert names == ["MOL"]
@@ -115,16 +100,12 @@ def test_mixed_backends_produce_one_loadable_xml(tmp_path):
 
 
 def test_smirnoff_refuses_a_ligand_with_no_bond_orders(tmp_path):
-    from tests.helpers import write_methanol_pdb
-
     pdb = write_methanol_pdb(tmp_path / "lig.pdb")
     with pytest.raises(ValueError, match="bond orders"):
         build_ligand_xml(pdb, tmp_path / "out.xml", backend="smirnoff", workdir=tmp_path / "wd")
 
 
 def test_a_named_forcefield_release_is_honoured(tmp_path):
-    from forcefill.smirnoff import installed_smirnoff_forcefields, smirnoff_residue_ffxml
-
     release = installed_smirnoff_forcefields()[0]
     xml = smirnoff_residue_ffxml(ResolvedSpec(name="MOL", smiles="CO", forcefield=release), tmp_path / "MOL.xml")
     assert Path(xml).is_file()

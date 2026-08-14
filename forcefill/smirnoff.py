@@ -19,10 +19,9 @@ string for one molecule. Two properties of that output shape this module:
       molecule's name, so :func:`smirnoff_residue_ffxml` rewrites it to the
       residue name the rest of forcefill uses.
 
-``openff-toolkit`` and ``openmmforcefields`` are imported lazily inside the
-functions, so ``import forcefill`` never requires them. Install them with
-``conda install -c conda-forge openff-toolkit openmmforcefields`` or
-``pip install 'forcefill[smirnoff]'``.
+``openff-toolkit`` and ``openmmforcefields`` are ordinary dependencies; the
+conda-forge channel is the recommended route for both, as it is for the rest of
+the stack.
 """
 
 from __future__ import annotations
@@ -31,6 +30,9 @@ import logging
 import os
 import xml.etree.ElementTree as ET
 from pathlib import Path
+
+from openff.toolkit import Molecule
+from openmmforcefields.generators import SMIRNOFFTemplateGenerator
 
 from ._spec import ResolvedSpec
 
@@ -46,31 +48,13 @@ PathLike = str | os.PathLike
 _MOLECULE_FORMATS = {".sdf", ".sd", ".mol", ".mol2"}
 
 
-def _import_openff():  # -> (openff Molecule, SMIRNOFFTemplateGenerator)
-    """Import the OpenFF stack, or explain how to install it."""
-    try:
-        from openff.toolkit import Molecule
-        from openmmforcefields.generators import SMIRNOFFTemplateGenerator
-    except ImportError as exc:
-        raise RuntimeError(
-            "The smirnoff backend needs openff-toolkit and openmmforcefields, "
-            f"which are not installed ({exc}). Install them with 'conda install "
-            "-c conda-forge openff-toolkit openmmforcefields' or "
-            "'pip install \"forcefill[smirnoff]\"', or use backend='gaff'."
-        ) from exc
-    return Molecule, SMIRNOFFTemplateGenerator
-
-
 def installed_smirnoff_forcefields() -> list[str]:
     """Names of the SMIRNOFF releases available locally, e.g. ``['openff-2.2.1', ...]``."""
-    _, generator = _import_openff()
-    return list(generator.INSTALLED_FORCEFIELDS)
+    return list(SMIRNOFFTemplateGenerator.INSTALLED_FORCEFIELDS)
 
 
 def _load_molecule(spec: ResolvedSpec):  # -> an openff Molecule
     """Build an OpenFF Molecule from the spec's file or SMILES, with a 3D conformer."""
-    Molecule, _ = _import_openff()  # noqa: N806 - the toolkit's own class name
-
     if spec.smiles is not None:
         molecule = Molecule.from_smiles(spec.smiles, allow_undefined_stereo=True)
     else:
@@ -164,13 +148,10 @@ def smirnoff_residue_ffxml(spec: ResolvedSpec, output_xml: PathLike) -> str:
         The path written, as a string.
 
     Raises:
-        RuntimeError: openff-toolkit/openmmforcefields are missing, or the
-            generator produced something unexpected.
+        RuntimeError: openmmforcefields produced something unexpected.
         ValueError: The ligand source is unusable, or its formal charge
             contradicts an explicit ``net_charge``.
     """
-    _, SMIRNOFFTemplateGenerator = _import_openff()  # noqa: N806 - the library's own class name
-
     molecule = _load_molecule(spec)
     log.info(
         "smirnoff: %s (net charge %+d, %s)",

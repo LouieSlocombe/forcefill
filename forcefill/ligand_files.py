@@ -12,12 +12,11 @@ visible in the input file:
       very end as an opaque OpenMM "no template matched" error.
 
 :func:`inspect_ligand_file` reads elements, bonds, coordinates and formal charge
-out of SDF (V2000 and V3000), MOL2 and PDB. RDKit is used when it is installed
-and falls back to a small text parser otherwise, so the checks work in the base
-install; ``formal_charge`` is the one field the fallback cannot always recover.
-
-RDKit is imported lazily inside the functions that need it, so ``import
-forcefill`` never requires it.
+out of SDF (V2000 and V3000), MOL2 and PDB. RDKit does the reading where it can,
+and small text readers cover what it cannot - chiefly the GAFF-typed mol2
+antechamber writes, whose atom types are not SYBYL ones. ``formal_charge`` is
+the one field the text readers cannot always recover, which is why
+``prefer_rdkit`` exists and defaults to True.
 """
 
 from __future__ import annotations
@@ -30,7 +29,11 @@ from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import parmed
 from openmm import app, unit
+from parmed.modeller import ResidueTemplateContainer
+from rdkit import Chem, RDLogger
+from rdkit.Chem import AllChem
 
 log = logging.getLogger(__name__)
 
@@ -109,12 +112,13 @@ def residue_formula(residue: app.topology.Residue) -> Counter[str]:
 
 
 def _rdkit_mol_from_file(path: Path):  # -> an rdkit Mol, which we cannot annotate without importing it
-    """Load *path* with RDKit, or return None if RDKit is absent or cannot read it."""
-    try:
-        from rdkit import Chem, RDLogger
-    except ImportError:
-        return None
+    """Load *path* with RDKit, or return None if RDKit cannot read it.
 
+    Returning None is not about RDKit being unavailable - it is a hard
+    dependency. It is about the formats RDKit genuinely will not parse, chiefly
+    the GAFF-typed mol2 antechamber writes, whose atom types are not SYBYL ones.
+    The text readers below cover those.
+    """
     # RDKit narrates every valence complaint to stderr; the caller gets a proper
     # message from the checks below instead.
     RDLogger.DisableLog("rdApp.*")
@@ -141,8 +145,6 @@ def _rdkit_mol_from_file(path: Path):  # -> an rdkit Mol, which we cannot annota
 
 def _info_from_rdkit(mol, path: Path) -> LigandFileInfo:  # mol is an rdkit Mol
     """Build a LigandFileInfo from an RDKit molecule."""
-    from rdkit import Chem
-
     positions: list[tuple[float, float, float]] = []
     if mol.GetNumConformers():
         conf = mol.GetConformer()
@@ -237,7 +239,7 @@ def _read_sdf(path: Path) -> LigandFileInfo:
 
 
 def _read_mol2(path: Path) -> LigandFileInfo:
-    """Read a MOL2 with ParmEd, which is already a hard dependency and knows the atom types.
+    """Read a MOL2 with ParmEd, which knows the atom types RDKit's parser rejects.
 
     Hand-parsing the type column does not work: a mol2 written by antechamber
     carries GAFF types (``c3``, ``ho``, ``oh``), not SYBYL ones (``C.3``), and
@@ -248,9 +250,6 @@ def _read_mol2(path: Path) -> LigandFileInfo:
     partial charges - reported only when they are not all zero and the sum is
     close enough to an integer to be a real net charge rather than rounding noise.
     """
-    import parmed
-    from parmed.modeller import ResidueTemplateContainer
-
     template = parmed.load_file(str(path))
     if isinstance(template, ResidueTemplateContainer):
         if len(template) > 1:
@@ -479,18 +478,6 @@ def _close_pairs(
 # --------------------------------------------------------------------------
 
 
-def _require_rdkit(what: str):  # -> the rdkit Chem module
-    """Import RDKit or explain how to get it."""
-    try:
-        from rdkit import Chem
-    except ImportError as exc:
-        raise RuntimeError(
-            f"{what} needs RDKit, which is not installed. Install it with "
-            "'conda install -c conda-forge rdkit' or 'pip install \"forcefill[rdkit]\"'."
-        ) from exc
-    return Chem
-
-
 def smiles_to_sdf(smiles: str, out_sdf: PathLike, name: str = "LIG", *, random_seed: int = 0xF0) -> str:
     """Embed *smiles* as a 3D SDF with explicit hydrogens and return the path.
 
@@ -501,11 +488,8 @@ def smiles_to_sdf(smiles: str, out_sdf: PathLike, name: str = "LIG", *, random_s
     charges.
 
     Raises:
-        RuntimeError: RDKit is not installed, or it could not parse or embed.
+        RuntimeError: RDKit could not parse the SMILES or embed a conformer.
     """
-    Chem = _require_rdkit("Parameterizing from a SMILES")  # noqa: N806 - RDKit's own module name
-    from rdkit.Chem import AllChem
-
     mol = Chem.MolFromSmiles(smiles)
     if mol is None:
         raise RuntimeError(f"RDKit could not parse the SMILES for {name}: {smiles!r}")
@@ -546,12 +530,9 @@ def smiles_with_residue_geometry(
     ``AssignBondOrdersFromTemplate`` enforces.
 
     Raises:
-        RuntimeError: RDKit is not installed, or the SMILES does not match the
-            residue.
+        RuntimeError: RDKit could not read either input, or the SMILES does not
+            describe the same molecule as the residue.
     """
-    Chem = _require_rdkit("Parameterizing from a SMILES")  # noqa: N806 - RDKit's own module name
-    from rdkit.Chem import AllChem
-
     template = Chem.MolFromSmiles(smiles)
     if template is None:
         raise RuntimeError(f"RDKit could not parse the SMILES for {name}: {smiles!r}")

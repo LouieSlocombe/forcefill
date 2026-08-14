@@ -47,11 +47,13 @@ Pipeline:
        a perfectly valid System.
 
 Requirements:
-    * ``openmm >= 7.6`` and ``parmed >= 3.4`` (``pip install openmm parmed``)
+    * ``openmm``, ``parmed``, ``rdkit``, ``openff-toolkit`` and
+      ``openmmforcefields`` at import time
     * AmberTools (``antechamber``, ``parmchk2``) on ``PATH`` for the gaff
       backend, e.g. ``conda install -c conda-forge ambertools``
-    * ``openff-toolkit`` and ``openmmforcefields`` for the smirnoff backend;
-      ``rdkit`` for SMILES input. Both optional and imported lazily.
+
+    conda-forge is the recommended route for the whole stack; see
+    ``environment.yml``.
 
 Example:
     >>> from forcefill import build_forcefield_xml

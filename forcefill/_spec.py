@@ -70,10 +70,9 @@ class LigandSpec:
             orders and protonation as drawn spare antechamber having to
             re-perceive them from geometry, a classic source of silently wrong
             atom types. Mutually exclusive with *smiles*.
-        smiles: SMILES for the ligand, converted to a 3D SDF before use. Needs
-            RDKit (``pip install 'forcefill[rdkit]'``). When the residue also
-            exists in the input PDB, the PDB's coordinates are kept and only the
-            bond orders come from the SMILES.
+        smiles: SMILES for the ligand, converted to a 3D SDF before use. When
+            the residue also exists in the input PDB, the PDB's coordinates are
+            kept and only the bond orders come from the SMILES.
         net_charge: Formal net charge. ``None`` means "read it from *file* or
             *smiles*", falling back to 0 for a residue extracted from a PDB.
             Getting this right is essential for sensible AM1-BCC charges.

@@ -14,11 +14,17 @@ authors = [
 ]
 requires-python = ">= 3.10"
 dependencies = [
-    # Both are required at import time. conda-forge is the recommended install
-    # route for the full stack: the AmberTools executables (antechamber,
-    # parmchk2) that do the actual parameterization are conda-only.
+    # All required at import time. conda-forge is the recommended install route
+    # for the full stack: the AmberTools executables (antechamber, parmchk2)
+    # that do the gaff backend's actual work are conda-only, and rdkit and the
+    # OpenFF packages are far better behaved from conda-forge than from PyPI.
     "openmm >= 7.6",
     "parmed >= 3.4",
+    # SMILES input, and the file readers behind the preflight checks.
+    "rdkit",
+    # The smirnoff backend.
+    "openff-toolkit >= 0.16",
+    "openmmforcefields >= 0.14",
 ]
 classifiers = [
     "Programming Language :: Python :: 3",
@@ -34,13 +40,6 @@ test = ["pytest", "pytest-cov"]
 # version here must match .pre-commit-config.yaml and .github/workflows/ci.yml or
 # a locally-clean tree can still fail the CI format gate.
 dev = ["ruff == 0.16.2", "pre-commit"]
-# Optional ligand features, both imported lazily so the base install never needs
-# them. rdkit: SMILES input and the more robust file readers. smirnoff: the
-# OpenFF backend (backend="smirnoff"). conda-forge is the better route for both,
-# for the same reason it is for openmm — see environment.yml.
-rdkit = ["rdkit"]
-smirnoff = ["openff-toolkit >= 0.16", "openmmforcefields >= 0.14"]
-all = ["rdkit", "openff-toolkit >= 0.16", "openmmforcefields >= 0.14"]
 
 [project.urls]
 Homepage = "https://github.com/LouieSlocombe/forcefill"
@@ -60,7 +59,7 @@ testpaths = ["tests"]
 addopts = "-ra"
 markers = [
     "integration: runs the real AmberTools executables (antechamber/parmchk2); deselect with -m 'not integration'",
-    "smirnoff: needs openff-toolkit and openmmforcefields; deselect with -m 'not smirnoff'",
+    "smirnoff: runs real OpenFF parameterization (slow); deselect with -m 'not smirnoff'",
 ]
 
 # Coverage is measured with `pytest --cov`; the config lives here so local runs

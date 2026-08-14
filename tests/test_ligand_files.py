@@ -1,8 +1,9 @@
 """Tests for :mod:`forcefill.ligand_files`: reading ligand files and the preflight checks.
 
-Hermetic apart from the RDKit paths, which skip when it is not installed. Every
-reader is exercised twice, with and without RDKit, because the fallback text
-parser is what the base install actually runs.
+Hermetic - no AmberTools. Every reader is exercised twice, through RDKit and
+through the text readers, because RDKit genuinely cannot parse some of what
+forcefill is handed (the GAFF-typed mol2 antechamber writes, above all) and the
+text path is what covers it.
 """
 
 from pathlib import Path
@@ -35,22 +36,10 @@ EXAMPLES = Path(__file__).parent.parent / "examples" / "data"
 BENZAMIDINIUM = EXAMPLES / "benzamidinium.sdf"
 
 
-def _has_rdkit() -> bool:
-    try:
-        import rdkit  # noqa: F401
-    except ImportError:
-        return False
-    return True
-
-
-needs_rdkit = pytest.mark.skipif(not _has_rdkit(), reason="RDKit is not installed")
-
-#: Both reader paths. The text parser is not a second-class citizen: it is what
-#: runs in the base install, so it is tested on every format RDKit is.
-BOTH_READERS = pytest.mark.parametrize(
-    "prefer_rdkit",
-    [pytest.param(True, marks=needs_rdkit, id="rdkit"), pytest.param(False, id="text")],
-)
+#: Both reader paths. The text readers are not a second-class citizen: they are
+#: what runs whenever RDKit cannot parse the file, so they are tested on every
+#: format RDKit is.
+BOTH_READERS = pytest.mark.parametrize("prefer_rdkit", [True, False], ids=["rdkit", "text"])
 
 
 # --------------------------------------------------------------------------
@@ -300,7 +289,6 @@ def test_split_multi_sdf_rejects_an_empty_file(tmp_path):
 # --------------------------------------------------------------------------
 
 
-@needs_rdkit
 def test_smiles_to_sdf_embeds_hydrogens_and_charge(tmp_path):
     out = smiles_to_sdf("NC(=[NH2+])c1ccccc1", tmp_path / "ben.sdf", "BEN")
     info = inspect_ligand_file(out)
@@ -310,7 +298,6 @@ def test_smiles_to_sdf_embeds_hydrogens_and_charge(tmp_path):
     assert len(set(info.positions)) == info.n_atoms
 
 
-@needs_rdkit
 def test_smiles_to_sdf_is_reproducible(tmp_path):
     # The seed is fixed so a re-run gives the same conformer and so the same charges.
     first = Path(smiles_to_sdf("CCO", tmp_path / "a.sdf", "ETH")).read_text()
@@ -318,13 +305,11 @@ def test_smiles_to_sdf_is_reproducible(tmp_path):
     assert first == second
 
 
-@needs_rdkit
 def test_smiles_to_sdf_rejects_nonsense(tmp_path):
     with pytest.raises(RuntimeError, match="could not parse"):
         smiles_to_sdf("this is not a smiles", tmp_path / "x.sdf", "LIG")
 
 
-@needs_rdkit
 def test_smiles_with_residue_geometry_keeps_the_structure_coordinates(tmp_path):
     pdb = write_methanol_pdb(tmp_path / "in.pdb")
     out = smiles_with_residue_geometry("CO", pdb, tmp_path / "lig.sdf", "LIG")
@@ -336,21 +321,21 @@ def test_smiles_with_residue_geometry_keeps_the_structure_coordinates(tmp_path):
     assert flat == pytest.approx([c for xyz in original.positions for c in xyz], abs=1e-3)
 
 
-@needs_rdkit
 def test_smiles_with_residue_geometry_rejects_a_different_molecule(tmp_path):
     pdb = write_methanol_pdb(tmp_path / "in.pdb")
     with pytest.raises(RuntimeError, match="does not match the residue"):
         smiles_with_residue_geometry("CCO", pdb, tmp_path / "lig.sdf", "LIG")
 
 
-def test_smiles_needs_rdkit(tmp_path, monkeypatch):
-    # Without RDKit the failure must name the package and how to get it.
-    monkeypatch.setitem(__import__("sys").modules, "rdkit", None)
-    with pytest.raises((RuntimeError, ImportError)):
-        smiles_to_sdf("CO", tmp_path / "x.sdf", "LIG")
-
-
 def test_info_reports_where_it_came_from(tmp_path):
     info = inspect_ligand_file(write_methanol_sdf(tmp_path / "lig.sdf"), prefer_rdkit=False)
     assert info.source == "text"
     assert isinstance(info, LigandFileInfo)
+
+
+def test_gaff_mol2_falls_back_to_the_text_reader(tmp_path):
+    # Not a hypothetical: RDKit's mol2 parser expects SYBYL atom types and
+    # returns None for the GAFF-typed file antechamber writes, so prefer_rdkit
+    # silently lands on ParmEd. This is the reason the text readers exist now
+    # that RDKit is a hard dependency.
+    assert inspect_ligand_file(DATA / "methanol.mol2", prefer_rdkit=True).source == "text"
