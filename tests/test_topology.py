@@ -46,6 +46,16 @@ def test_classify_standard_residue_is_skipped():
     assert "repair the structure" in skipped["ALA"]
 
 
+@pytest.mark.parametrize("name", ["HSD", "HSE", "HSP", "ADE", "CYT", "GUA", "THY", "URA", "TIP3"])
+def test_classify_charmm_spellings_are_standard(name):
+    # A structure prepared for CHARMM names histidine HSD/HSE/HSP and the bases
+    # ADE/CYT/GUA/THY/URA. Without those, an incomplete protein residue would be
+    # sent to a backend instead of reported as needing repair.
+    to_param, skipped = topology._classify_unmatched([StubResidue(name, n_atoms=8)])
+    assert to_param == {}
+    assert "repair the structure" in skipped[name]
+
+
 def test_classify_monatomic_is_skipped():
     to_param, skipped = topology._classify_unmatched([StubResidue("ZN", n_atoms=1)])
     assert to_param == {}

@@ -6,9 +6,11 @@ Turn ligands into a ready-to-use [OpenMM](https://openmm.org) force-field XML �
 either the non-standard residues (ligands, cofactors, hetero molecules) found in
 a PDB, or ligand files on their own. Parameters come from AmberTools
 (`antechamber` GAFF/GAFF2 atom types + AM1-BCC charges, `parmchk2` for missing
-parameters) via [ParmEd](https://github.com/ParmEd/ParmEd), or from
+parameters) via [ParmEd](https://github.com/ParmEd/ParmEd), from
 [OpenFF](https://openforcefield.org) Sage via
-[openmmforcefields](https://github.com/openmm/openmmforcefields).
+[openmmforcefields](https://github.com/openmm/openmmforcefields), or — for
+CHARMM — by converting the CGenFF stream file
+[ParamChem](https://cgenff.paramchem.org) gave you.
 
 The output is a plain ffxml file you load alongside the standard force fields:
 
@@ -42,7 +44,8 @@ build_ligand_xml("benzamidinium.sdf", "ben.xml")
    the geometry is checked for the faults that produce NaN energies.
 4. **Parameterize** — each unique residue goes through `antechamber` (GAFF2 atom
    types, AM1-BCC charges → `.mol2`) and `parmchk2` (missing parameters →
-   `.frcmod`), or through OpenFF with `backend="smirnoff"`.
+   `.frcmod`), through OpenFF with `backend="smirnoff"`, or through a CGenFF
+   stream file with `backend="charmm"`.
 5. **Assemble** — ParmEd merges the GAFF database, the frcmods and the mol2
    templates into one XML per residue plus one combined XML.
 6. **Validate** — an `openmm.System` is built from `base force field + new
@@ -260,23 +263,92 @@ The older `net_charges`, `multiplicities` and `residue_files` mappings still
 work and are folded in. Setting the same thing both ways raises rather than
 silently picking a winner.
 
-### Two backends
+### Three backends
 
-| | `backend="gaff"` (default) | `backend="smirnoff"` |
-|---|---|---|
-| Parameters | GAFF/GAFF2 atom types, AM1-BCC charges | OpenFF Sage, SMARTS-matched |
-| Needs | AmberTools on `PATH` | nothing beyond the install |
-| Ligand source | PDB residue, SDF, MOL2 or SMILES | **SDF, MOL2 or SMILES only** |
+| | `backend="gaff"` (default) | `backend="smirnoff"` | `backend="charmm"` |
+|---|---|---|---|
+| Parameters | GAFF/GAFF2 atom types, AM1-BCC charges | OpenFF Sage, SMARTS-matched | CGenFF, **converted, not derived** |
+| Needs | AmberTools on `PATH` | nothing beyond the install | a CGenFF stream file for the ligand |
+| Ligand source | PDB residue, SDF, MOL2 or SMILES | **SDF, MOL2 or SMILES only** | **CHARMM `.str`/`.rtf`/`.prm` only** |
+| Base force field | `amber14` (default) | `amber14` (default) | **`CHARMM_BASE_FORCEFIELD`** |
 
 SMIRNOFF assigns parameters by matching SMARTS against the chemical graph, so it
 has no way to work from a PDB residue — a PDB records no bond orders. A ligand on
 that backend needs a `file` or a `smiles`, and says so if it has neither.
 
-Backends can be mixed in one call: forcefill writes one combined XML and OpenMM
-loads it. That works because SMIRNOFF names its atom types by a hash of the
+GAFF and SMIRNOFF can be mixed in one call: forcefill writes one combined XML and
+OpenMM loads it. That works because SMIRNOFF names its atom types by a hash of the
 molecule, so nothing collides — and because the merge keeps the two
 `<PeriodicTorsionForce>` sections apart, since GAFF and SMIRNOFF impropers use
 different `ordering` conventions.
+
+CHARMM cannot join them — see below.
+
+### CHARMM and CGenFF
+
+```python
+from forcefill import build_forcefield_xml, CHARMM_BASE_FORCEFIELD, LigandSpec
+
+build_forcefield_xml(
+    "complex.pdb",
+    "extras.xml",
+    base_forcefield=CHARMM_BASE_FORCEFIELD,  # charmm36.xml + charmm36/water.xml
+    backend="charmm",
+    ligands={"LIG": LigandSpec(charmm_files=["lig.str"])},
+)
+```
+
+**forcefill converts CGenFF parameters; it cannot derive them.** There is no
+CHARMM equivalent of antechamber to call: parameters come from
+[ParamChem](https://cgenff.paramchem.org) or the licensed `cgenff` program, both
+of which emit a CHARMM stream file. Give forcefill that file and it produces a
+validated ffxml — which is the part that is fiddly enough to get quietly wrong.
+
+**CHARMM is not interchangeable with Amber.** Amber scales 1-4 interactions by
+0.8333/0.5 and CHARMM by 1.0/1.0, and OpenMM refuses to load force fields that
+disagree:
+
+```
+ValueError: Found multiple NonbondedForce tags with different 1-4 scales
+```
+
+So a CHARMM ligand needs `base_forcefield=CHARMM_BASE_FORCEFIELD`, and cannot
+share a build with a `gaff` or `smirnoff` one. Both mistakes are refused up
+front, by name, rather than left to OpenMM at the end of the run.
+
+The generated XML is a **residue template**, not a self-contained force field:
+`charmm36.xml` already carries all 412 CGenFF atom types and their parameters, so
+forcefill names them rather than redefining them, and adds only the terms the
+stream file itself supplies (what ParamChem assigned by analogy). Two
+consequences worth knowing:
+
+* No CHARMM toppar download is needed. A ParamChem `.str` and OpenMM's own
+  `charmm36.xml` are enough.
+* Loading the result *without* `charmm36.xml` underneath it will not work. It
+  refers to atom types it does not define.
+
+Three ways this goes silently wrong if done by hand with ParmEd, all of which
+forcefill handles — they are why the backend is a module and not a three-line
+script:
+
+| What ParmEd does | What it costs |
+|---|---|
+| Writes `sigma="1.0" epsilon="0.0"` for atom types it only knows the mass of | Loaded after `charmm36.xml`, those **override the real Lennard-Jones parameters**. OpenMM treats a repeated atom type as an override, not a clash, so there is no error |
+| Defaults to `separate_ljforce=False` | The ligand's LJ energy is **counted twice** — once in `NonbondedForce`, once in the `CustomNonbondedForce` `charmm36.xml` builds for its NBFIX pairs |
+| Drops a residue template whose atom types it cannot resolve, with a `ParameterWarning` | A ParamChem `.str` never carries `MASS` records, so the default outcome is an **empty ffxml that loads fine and parameterizes nothing** |
+
+Two smaller things follow from `charmm36.xml` shipping 814 residue templates —
+every amino acid, nucleotide, lipid and CGenFF model compound:
+
+* a fragment-sized ligand may be matched by the base force field already, in
+  which case there is nothing to parameterize and forcefill says so;
+* a ligand named after one of them (`MET`, `PC`, `CA`) is refused, because OpenMM
+  will not load two templates with the same name.
+
+Finally, `build_ligand_xml` can validate a CHARMM ligand but not minimize it: a
+stream file records internal coordinates, not Cartesian ones, so there is no
+geometry to minimize. Use `build_forcefield_xml`, where the coordinates come
+from the structure.
 
 ### Ligands without a structure
 

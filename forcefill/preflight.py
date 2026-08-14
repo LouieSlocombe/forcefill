@@ -15,20 +15,25 @@ Running this as one pass up front also means a mistake in the last ligand does
 not cost the parameterization of the first.
 
 The reading and the checks themselves live in :mod:`forcefill.ligand_files`;
-this module is what applies them to a set of specs. The checks that run *after*
-parameterization, on the generated force field, are :mod:`forcefill.checks`.
+this module is what applies them to a set of specs. A charmm ligand goes through
+the same two composition checks, reading its ``RESI`` block instead of a ligand
+file - the CGenFF conversion is cheap, but a stream file generated for a
+different protonation state than the structure holds is the same mistake and
+deserves the same message. The checks that run *after* parameterization, on the
+generated force field, are :mod:`forcefill.checks`.
 """
 
 from __future__ import annotations
 
 import logging
-from collections.abc import Mapping
+from collections import Counter
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 from openmm import app, unit
 
-from . import ligand_files
-from ._spec import ResolvedSpec
+from . import charmm, ligand_files
+from ._spec import CHARMM_BASE_FORCEFIELD, ResolvedSpec
 from .topology import _residue_positions, extract_residue_to_pdb
 
 log = logging.getLogger(__name__)
@@ -63,6 +68,26 @@ def _resolve_smiles(spec: ResolvedSpec, residue: app.topology.Residue | None, po
         return spec.with_file(ligand_files.smiles_to_sdf(spec.smiles, out_sdf, spec.name))
     residue_pdb = extract_residue_to_pdb(positions, residue, res_dir / f"{spec.name}_extracted.pdb")
     return spec.with_file(ligand_files.smiles_with_residue_geometry(spec.smiles, residue_pdb, out_sdf, spec.name))
+
+
+def _charmm_file_info(spec: ResolvedSpec, base_forcefield: Sequence[str]) -> ligand_files.LigandFileInfo:
+    """Describe a charmm ligand the way :mod:`forcefill.ligand_files` describes a file.
+
+    Reading the CHARMM files here is what makes a mismatch - a stream file
+    generated for a different protonation state than the structure holds -
+    an error before the conversion rather than an unmatched template after it.
+    """
+    params = charmm.read_charmm_files(spec.charmm_files)
+    template = charmm.residue_template(params, spec.name, spec.charmm_files)
+    elements = Counter(
+        element.symbol if element is not None else "?" for element in charmm.atom_elements(template, base_forcefield)
+    )
+    return ligand_files.LigandFileInfo(
+        path=str(spec.charmm_files[0]),
+        elements=elements,
+        n_bonds=len(template.bonds),
+        formal_charge=round(sum(atom.charge for atom in template.atoms)),
+    )
 
 
 def _apply_net_charge(spec: ResolvedSpec, info: ligand_files.LigandFileInfo) -> ResolvedSpec:
@@ -110,6 +135,7 @@ def preflight_specs(
     workdir: Path,
     *,
     strict: bool = True,
+    base_forcefield: Sequence[str] = CHARMM_BASE_FORCEFIELD,
 ) -> dict[str, ResolvedSpec]:
     """Check and complete every spec before anything expensive runs.
 
@@ -123,6 +149,8 @@ def preflight_specs(
         positions: Coordinates for *residues*, or None in standalone mode.
         workdir: Where a SMILES-derived SDF is written.
         strict: Raise on a composition or geometry fault rather than warn.
+        base_forcefield: Used only by the charmm backend, to resolve the CGenFF
+            atom types a stream file names into elements.
 
     Returns:
         ``{residue_name: ResolvedSpec}``, ready to parameterize.
@@ -133,6 +161,15 @@ def preflight_specs(
         residue = residues.get(name)
         if spec.smiles is not None:
             spec = _resolve_smiles(spec, residue, positions, workdir / name)
+
+        if spec.backend == "charmm":
+            # No geometry check: a stream file records internal coordinates, so
+            # there are no Cartesian ones to have gone wrong.
+            info = _charmm_file_info(spec, base_forcefield)
+            if residue is not None:
+                ligand_files.check_matches_residue(info, residue, name, strict=strict)
+            out[name] = _apply_net_charge(spec, info)
+            continue
 
         if spec.file is None:
             if residue is not None:

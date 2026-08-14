@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "forcefill"
 version = "0.0.0"
-description = "Parameterize non-standard PDB residues (ligands, cofactors) into OpenMM force-field XML with AmberTools GAFF/AM1-BCC and ParmEd"
+description = "Parameterize non-standard PDB residues (ligands, cofactors) into OpenMM force-field XML with AmberTools GAFF/AM1-BCC, OpenFF Sage or CHARMM CGenFF"
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]

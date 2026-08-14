@@ -21,6 +21,20 @@ backends (GAFF2 and OpenFF Sage) and then through both at once, merged into a
 single XML. It never states the net charge: the SDF says `+1` and forcefill
 reads it, which is the difference between that script and the one below.
 
+A third script covers CHARMM, where the parameters come from outside forcefill
+entirely:
+
+```bash
+python parameterize_ligand_charmm.py    # no AmberTools, no toppar download
+```
+
+It converts `data/benzamidinium_cgenff.str` into an ffxml, loads it on top of
+`charmm36.xml`, minimizes benzamidinium at the crystal geometry, and then shows
+the two combinations OpenMM could never load — a CHARMM ligand with an Amber
+base force field, and a CHARMM ligand mixed with a GAFF one — being refused by
+name. That refusal is the point: the two conventions scale 1-4 interactions
+differently, so mixing them is not a trade-off but an error.
+
 `parameterize_ligand.py` runs `build_forcefield_xml(minimize=True)` on the
 prepared structure and writes `ben_ff.xml`. The `minimize=True` proves the
 result from inside the library — a finite energy that a minimizer can lower,
@@ -99,8 +113,17 @@ large negative energy after minimization for both.
 | `prepare_trypsin_ben.py` | yes | One-time preparation script (downloads 3PTB, needs pdbfixer + rdkit) |
 | `parameterize_ligand.py` | yes | The actual example: forcefill + OpenMM minimization and dynamics |
 | `parameterize_ligand_standalone.py` | yes | The ligand on its own, no PDB: both backends, then both merged |
+| `parameterize_ligand_charmm.py` | yes | The same ligand under CHARMM: converting a CGenFF stream file |
 | `data/trypsin_ben_prepared.pdb` | yes | Prepared complex: protonated protein/waters/benzamidinium + bond-less Ca²⁺ |
 | `data/benzamidinium.sdf` | yes | The ligand as drawn: bond orders, +1 charge, 3D hydrogens |
+| `data/benzamidinium_cgenff.str` | yes | The same ligand's CGenFF topology, in the format ParamChem returns |
 | `data/3PTB.pdb` | no (downloaded) | The deposited entry, fetched by the prep script |
 | `ben_ff.xml`, `wd/` | no (generated) | Output of the example run |
 | `ben_standalone_*.xml`, `wd_standalone_*/` | no (generated) | Output of the standalone run |
+| `ben_charmm.xml`, `wd_charmm/` | no (generated) | Output of the CHARMM run |
+
+`data/benzamidinium_cgenff.str` is not a `cgenff` run — the program is licensed
+and its output is not redistributable. Its atom types and charges are taken
+verbatim from `RESI BAMI` in the published CGenFF topology file, renamed and
+reordered to match `data/benzamidinium.sdf`. For your own ligand, use what
+[ParamChem](https://cgenff.paramchem.org) gives you.

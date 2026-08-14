@@ -57,6 +57,30 @@ def test_spec_antechamber_args_are_a_tuple():
     assert spec.antechamber_args == ("-dr", "no")
 
 
+def test_spec_charmm_files_are_a_tuple():
+    files = ["lig.str"]
+    spec = LigandSpec(charmm_files=files)
+    files.append("more.prm")
+    assert spec.charmm_files == ("lig.str",)
+
+
+def test_spec_rejects_a_charmm_file_parmed_cannot_type():
+    # ParmEd decides what a CHARMM file is from its suffix, so this one would
+    # fail with a bare "Unrecognized file type" much later.
+    with pytest.raises(ValueError, match="decides the file type from the suffix"):
+        LigandSpec(charmm_files=["par_all36_cgenff.prm.txt"])
+
+
+def test_spec_accepts_a_charmm_inp_whose_name_says_what_it_is():
+    # ParmEd reads the kind of a .inp from the rest of the name, not the suffix.
+    assert LigandSpec(charmm_files=["toppar/par_all36_cgenff.inp"]).charmm_files
+
+
+def test_spec_rejects_a_charmm_inp_whose_name_does_not():
+    with pytest.raises(ValueError, match="must contain 'par' or 'top'"):
+        LigandSpec(charmm_files=["ligand.inp"])
+
+
 # --------------------------------------------------------------------------
 # resolve_specs
 # --------------------------------------------------------------------------
@@ -149,3 +173,52 @@ def test_resolve_lets_one_ligand_opt_out_of_the_default_backend():
     )
     assert specs["LIG"].backend == "gaff"
     assert specs["SMI"].backend == "smirnoff"
+
+
+# --------------------------------------------------------------------------
+# The charmm backend
+# --------------------------------------------------------------------------
+
+
+def test_resolve_requires_charmm_files_for_the_charmm_backend():
+    # forcefill converts CGenFF parameters; nothing in it can derive them.
+    with pytest.raises(ValueError, match="no CHARMM files"):
+        resolve_specs({}, defaults=_defaults(backend="charmm"))
+
+
+def test_resolve_appends_per_ligand_charmm_files():
+    # Shared toppar first, then the ligand's own stream file.
+    specs = resolve_specs(
+        {"LIG": LigandSpec(charmm_files=("lig.str",))},
+        defaults=_defaults(backend="charmm", charmm_files=("par_all36_cgenff.prm",)),
+    )
+    assert specs["LIG"].charmm_files == ("par_all36_cgenff.prm", "lig.str")
+    assert specs["LIG"].has_source
+
+
+@pytest.mark.parametrize("source", [{"file": "lig.sdf"}, {"smiles": "CO"}])
+def test_resolve_refuses_a_second_source_for_a_charmm_ligand(source):
+    # The RESI block names its own atoms and charges, so a molecule file would
+    # be read by nothing - silently, if it were allowed.
+    with pytest.raises(ValueError, match="charmm backend and also sets"):
+        resolve_specs(
+            {"LIG": LigandSpec(charmm_files=("lig.str",), **source)},
+            defaults=_defaults(backend="charmm"),
+        )
+
+
+def test_resolve_refuses_charmm_files_on_another_backend():
+    with pytest.raises(ValueError, match="cannot read them"):
+        resolve_specs({"LIG": LigandSpec(charmm_files=("lig.str",))}, defaults=_defaults(backend="gaff"))
+
+
+def test_resolve_leaves_shared_charmm_files_off_another_backend():
+    # A call-level toppar file is shared CHARMM input, not a per-ligand setting:
+    # it simply does not apply to a gaff ligand, and does not make it look like
+    # one that carries its own chemistry.
+    specs = resolve_specs(
+        {"LIG": LigandSpec(backend="gaff")},
+        defaults=_defaults(backend="charmm", charmm_files=("par_all36_cgenff.prm",)),
+    )
+    assert specs["LIG"].charmm_files == ()
+    assert not specs["LIG"].has_source

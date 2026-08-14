@@ -32,6 +32,7 @@ from dataclasses import dataclass, field, replace
 #: pipeline's internal form and stay importable from this module only.
 __all__ = [
     "BACKENDS",
+    "CHARMM_BASE_FORCEFIELD",
     "DEFAULT_BASE_FORCEFIELD",
     "DEFAULT_SMIRNOFF_FORCEFIELD",
     "LigandSpec",
@@ -43,9 +44,24 @@ PathLike = str | os.PathLike
 #: underneath the generated XML for the validation and minimization checks.
 DEFAULT_BASE_FORCEFIELD = ("amber14-all.xml", "amber14/tip3p.xml")
 
+#: The CHARMM equivalent, for ``backend="charmm"``. Not interchangeable with
+#: :data:`DEFAULT_BASE_FORCEFIELD`: Amber scales 1-4 interactions by
+#: 0.8333/0.5 and CHARMM by 1.0/1.0, and OpenMM refuses to load two force
+#: fields that disagree ("Found multiple NonbondedForce tags with different 1-4
+#: scales"). ``charmm36.xml`` already carries every CGenFF atom type and
+#: parameter, which is what lets the charmm backend emit a residue template
+#: alone - see :mod:`forcefill.charmm`.
+CHARMM_BASE_FORCEFIELD = ("charmm36.xml", "charmm36/water.xml")
+
 #: Parameterization backends. ``"gaff"`` is antechamber + parmchk2 + ParmEd;
-#: ``"smirnoff"`` is openff-toolkit + openmmforcefields.
-BACKENDS = ("gaff", "smirnoff")
+#: ``"smirnoff"`` is openff-toolkit + openmmforcefields; ``"charmm"`` converts
+#: CGenFF/ParamChem files with ParmEd.
+BACKENDS = ("gaff", "smirnoff", "charmm")
+
+#: File suffixes ``parmed.charmm.CharmmParameterSet`` dispatches on. It decides
+#: what a file *is* from its name alone, so a ``par_all36_cgenff.prm.txt``
+#: raises "Unrecognized file type" no matter what is inside it.
+CHARMM_FILE_SUFFIXES = (".str", ".rtf", ".top", ".prm", ".par", ".inp")
 
 #: SMIRNOFF release used when a spec does not name one. Pinned rather than
 #: "latest": the force field version is part of the science, and a silent
@@ -67,6 +83,34 @@ def check_choice(value: str, valid: Sequence[str], label: str) -> None:
         raise ValueError(f"{label}={value!r} is not one of {list(valid)}")
 
 
+def check_charmm_suffix(path: PathLike) -> None:
+    """Raise unless *path* has a name ParmEd recognizes as a CHARMM file.
+
+    ParmEd decides whether a file is a topology, a parameter set or a stream
+    file from its **name**, so a correctly-formatted parameter file saved as
+    ``par_all36_cgenff.prm.txt`` fails with a bare "Unrecognized file type".
+    Saying so here names the fix. ``.inp`` is the exception it makes for the old
+    CHARMM script convention, where the kind is read from the rest of the name
+    instead, and this mirrors that.
+    """
+    name = os.path.basename(str(path)).lower()
+    if name.endswith(".inp") and ("par" in name or "top" in name):
+        return
+    if not name.endswith(CHARMM_FILE_SUFFIXES):
+        raise ValueError(
+            f"{path} is not a CHARMM file ParmEd will read: it decides the file "
+            f"type from the suffix, which must be one of {list(CHARMM_FILE_SUFFIXES)}. "
+            "Rename the file (a parameter set saved as '.prm.txt' is the usual "
+            "case) rather than passing it as-is."
+        )
+    if name.endswith(".inp"):
+        raise ValueError(
+            f"{path} is a CHARMM '.inp' file, whose kind ParmEd reads from the "
+            "rest of the name - it must contain 'par' or 'top'. Rename it, or "
+            "give it a '.prm' or '.rtf' suffix instead."
+        )
+
+
 @dataclass(frozen=True)
 class LigandSpec:
     """How to parameterize one ligand.
@@ -76,7 +120,8 @@ class LigandSpec:
             reads) to use instead of extracting the residue from the PDB. Bond
             orders and protonation as drawn spare antechamber having to
             re-perceive them from geometry, a classic source of silently wrong
-            atom types. Mutually exclusive with *smiles*.
+            atom types. Mutually exclusive with *smiles*, and unused by the
+            ``charmm`` backend, which reads its chemistry from *charmm_files*.
         smiles: SMILES for the ligand, converted to a 3D SDF before use. When
             the residue also exists in the input PDB, the PDB's coordinates are
             kept and only the bond orders come from the SMILES.
@@ -90,11 +135,16 @@ class LigandSpec:
             the ``smirnoff`` backend.
         antechamber_args: Extra raw antechamber arguments for this ligand,
             appended after the call-level ones.
-        backend: ``"gaff"`` or ``"smirnoff"``; ``None`` inherits. The
-            ``smirnoff`` backend needs real bond orders, so a ligand using it
-            must set *file* or *smiles*.
+        backend: ``"gaff"``, ``"smirnoff"`` or ``"charmm"``; ``None`` inherits.
+            The ``smirnoff`` backend needs real bond orders, so a ligand using it
+            must set *file* or *smiles*; the ``charmm`` backend takes its
+            chemistry from *charmm_files* instead.
         forcefield: SMIRNOFF release for the ``smirnoff`` backend, e.g.
             ``"openff-2.2.1"``; ``None`` inherits. Ignored by ``gaff``.
+        charmm_files: CHARMM topology/parameter files for the ``charmm``
+            backend - typically the single ``.str`` stream file the CGenFF
+            program or ParamChem produced for this ligand, plus any extra
+            ``.rtf``/``.prm`` it needs. Appended after the call-level ones.
     """
 
     file: PathLike | None = None
@@ -106,6 +156,7 @@ class LigandSpec:
     antechamber_args: Sequence[str] = ()
     backend: str | None = None
     forcefield: str | None = None
+    charmm_files: Sequence[PathLike] = ()
 
     def __post_init__(self) -> None:
         """Reject contradictory or typo'd settings at construction, not mid-pipeline."""
@@ -122,8 +173,11 @@ class LigandSpec:
             check_choice(self.backend, BACKENDS, "backend")
         if self.multiplicity < 1:
             raise ValueError(f"multiplicity={self.multiplicity!r} must be >= 1.")
-        # Tuple, so a caller's list cannot mutate underneath a frozen dataclass.
+        for path in self.charmm_files:
+            check_charmm_suffix(path)
+        # Tuples, so a caller's list cannot mutate underneath a frozen dataclass.
         object.__setattr__(self, "antechamber_args", tuple(self.antechamber_args))
+        object.__setattr__(self, "charmm_files", tuple(self.charmm_files))
 
 
 @dataclass(frozen=True)
@@ -145,11 +199,17 @@ class ResolvedSpec:
     antechamber_args: tuple[str, ...] = ()
     backend: str = "gaff"
     forcefield: str = DEFAULT_SMIRNOFF_FORCEFIELD
+    charmm_files: tuple[PathLike, ...] = ()
 
     @property
     def has_explicit_bonds(self) -> bool:
         """True when the ligand comes from a source that carries bond orders."""
         return self.file is not None or self.smiles is not None
+
+    @property
+    def has_source(self) -> bool:
+        """True when the ligand carries its own chemistry, without an input structure."""
+        return self.has_explicit_bonds or bool(self.charmm_files)
 
     def with_net_charge(self, net_charge: int) -> ResolvedSpec:
         """Copy of this spec with *net_charge* filled in."""
@@ -169,6 +229,7 @@ class _Defaults:
     antechamber_args: tuple[str, ...] = ()
     backend: str = "gaff"
     forcefield: str = DEFAULT_SMIRNOFF_FORCEFIELD
+    charmm_files: tuple[PathLike, ...] = ()
     #: Residue names to build specs for. Everything outside this set is reported
     #: by the caller as an override that matched nothing.
     names: frozenset[str] = field(default_factory=frozenset)
@@ -241,6 +302,35 @@ def resolve_specs(
                 f"LigandSpec(file=...) or LigandSpec(smiles=...) for {name} - or "
                 "use the gaff backend, which perceives bonds from geometry."
             )
+        # Call-level charmm_files are shared CHARMM input and simply do not apply
+        # to a ligand on another backend; a per-ligand one there is a mistake.
+        charmm_files = (*defaults.charmm_files, *spec.charmm_files) if backend == "charmm" else ()
+        if backend == "charmm":
+            if not charmm_files:
+                raise ValueError(
+                    f"Residue {name} uses the charmm backend but has no CHARMM "
+                    "files. forcefill converts CGenFF parameters, it does not "
+                    "derive them - generate a stream file for the ligand with "
+                    "ParamChem (cgenff.paramchem.org) or the cgenff program, "
+                    f"then pass LigandSpec(charmm_files=['{name.lower()}.str']) "
+                    "for it."
+                )
+            source = "smiles" if spec.smiles is not None else "file" if spec.file is not None else None
+            if source is not None:
+                raise ValueError(
+                    f"Residue {name} uses the charmm backend and also sets "
+                    f"{source}={getattr(spec, source)!r}. The charmm backend takes "
+                    "the ligand's atoms, bonds and charges from its CHARMM files, "
+                    f"so the {source} would be ignored - drop it, or switch this "
+                    "ligand to the gaff or smirnoff backend."
+                )
+        elif spec.charmm_files:
+            raise ValueError(
+                f"Residue {name} was given charmm_files={list(spec.charmm_files)!r} "
+                f"but uses the {backend} backend, which cannot read them - they "
+                f"would be silently ignored. Set backend='charmm' for {name}, or "
+                "drop the files."
+            )
         resolved[name] = ResolvedSpec(
             name=name,
             file=spec.file,
@@ -252,5 +342,6 @@ def resolve_specs(
             antechamber_args=(*defaults.antechamber_args, *spec.antechamber_args),
             backend=backend,
             forcefield=spec.forcefield or defaults.forcefield,
+            charmm_files=charmm_files,
         )
     return resolved

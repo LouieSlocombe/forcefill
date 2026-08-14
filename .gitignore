@@ -30,5 +30,7 @@ venv/
 examples/data/3PTB.pdb
 examples/ben_ff.xml
 examples/ben_standalone_*.xml
+examples/ben_charmm.xml
 examples/wd/
 examples/wd_standalone_*/
+examples/wd_charmm/

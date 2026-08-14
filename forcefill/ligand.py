@@ -7,13 +7,16 @@ themselves::
     build_ligand_xml("benzamidinium.sdf", "ben.xml")
     build_ligand_xml(["lig1.sdf", "lig2.sdf"], "ligs.xml")
     build_ligand_xml({"BEN": LigandSpec(smiles="NC(=[NH2+])c1ccccc1")}, "ben.xml")
+    build_ligand_xml("ben.str", "ben.xml", base_forcefield=CHARMM_BASE_FORCEFIELD)
 
 Same backends, same preflight checks, same output: an ffxml you load next to the
 standard force fields. What changes is what the validation can check. With no
 structure there is no bond graph to match the generated template against, so the
 molecule itself supplies the topology - which makes the check narrower but not
 weaker: it still proves the template covers every atom and that no parameter is
-missing, and with ``minimize=True`` that the numbers are physical.
+missing, and with ``minimize=True`` that the numbers are physical. The charmm
+backend is the exception: its input carries no Cartesian coordinates, so it can
+be validated here but not minimized.
 
 The one thing this cannot tell you is whether the ligand matches the protein
 complex you eventually load it with. If you have that structure, use
@@ -28,12 +31,13 @@ from collections.abc import Mapping, Sequence
 
 from openmm import app, unit
 
-from . import _pipeline, ligand_files, smirnoff
+from . import _pipeline, charmm, ligand_files, smirnoff
 from ._pipeline import ParameterizationResult, ResidueArtifacts
 from ._spec import (
     ATOM_TYPES,
     BACKENDS,
     CHARGE_METHODS,
+    CHARMM_FILE_SUFFIXES,
     DEFAULT_BASE_FORCEFIELD,
     DEFAULT_SMIRNOFF_FORCEFIELD,
     LigandSpec,
@@ -61,15 +65,22 @@ def _coerce_spec(value: LigandSpec | PathLike) -> LigandSpec:
     A plain string is always a *path*, never a SMILES. The two are not reliably
     distinguishable (``C`` is both a valid filename and methane), and guessing
     wrong would silently parameterize the wrong molecule - so a SMILES must say
-    so, as ``LigandSpec(smiles=...)``.
+    so, as ``LigandSpec(smiles=...)``. A CHARMM file is recognized by its suffix
+    and becomes ``charmm_files``: it is a parameter set, not a molecule file, and
+    nothing else in forcefill would know what to do with it.
     """
-    return value if isinstance(value, LigandSpec) else LigandSpec(file=value)
+    if isinstance(value, LigandSpec):
+        return value
+    if str(value).lower().endswith(CHARMM_FILE_SUFFIXES):
+        return LigandSpec(backend="charmm", charmm_files=(value,))
+    return LigandSpec(file=value)
 
 
 def _name_for(spec: LigandSpec, index: int) -> str:
     """Residue name for a spec given without one: from its file name."""
-    if spec.file is not None:
-        return ligand_files.residue_name_for(spec.file)
+    source = spec.file if spec.file is not None else next(iter(spec.charmm_files), None)
+    if source is not None:
+        return ligand_files.residue_name_for(source)
     raise ValueError(
         f"Ligand {index} was given as a SMILES with no residue name. A file name "
         "can supply one, a SMILES cannot - pass a mapping instead, as "
@@ -102,13 +113,21 @@ def _normalize_ligands(ligands: LigandInput) -> dict[str, LigandSpec]:
     return out
 
 
-def _ligand_topology(spec: ResolvedSpec, artifacts: ResidueArtifacts) -> tuple[app.Topology, unit.Quantity]:
+def _ligand_topology(
+    spec: ResolvedSpec,
+    artifacts: ResidueArtifacts,
+    base_forcefield: Sequence[str],
+) -> tuple[app.Topology, unit.Quantity | None]:
     """Topology and coordinates for validating one ligand on its own.
 
     For gaff that comes from the mol2 antechamber wrote, which is the molecule as
-    it was actually parameterized; for smirnoff, from the molecule itself.
+    it was actually parameterized; for smirnoff, from the molecule itself. A
+    charmm ligand has no coordinates at all - a stream file records internal
+    ones - so it returns None, and only the graph can be checked.
     """
-    if artifacts.mol2 is None:
+    if spec.backend == "charmm":
+        return charmm.ligand_topology(spec, base_forcefield), None
+    if spec.backend == "smirnoff":
         return smirnoff.ligand_topology(spec)
     structure = load_residue_template(artifacts.mol2, spec.name).to_structure()
     topology = structure.topology
@@ -126,6 +145,7 @@ def build_ligand_xml(
     atom_type: str = "gaff2",
     charge_method: str = "bcc",
     smirnoff_forcefield: str = DEFAULT_SMIRNOFF_FORCEFIELD,
+    charmm_files: Sequence[PathLike] = (),
     workdir: PathLike | None = None,
     cleanup: bool = False,
     validate: bool = True,
@@ -142,16 +162,22 @@ def build_ligand_xml(
             ``{residue_name: spec_or_path}`` mapping. Residue names not given
             explicitly are derived from the file name
             (``benzamidinium.sdf`` -> ``BEN``). A bare string is always a file
-            path; a SMILES must be given as ``LigandSpec(smiles=...)``.
+            path; a SMILES must be given as ``LigandSpec(smiles=...)``. A path
+            with a CHARMM suffix (``ben.str``) is taken as that ligand's CGenFF
+            parameters and puts it on the charmm backend.
         output_xml: Where to write the combined force-field XML.
         base_forcefield: ffxml files loaded underneath the generated one for the
             validation and minimization checks. Not used to decide what needs
-            parameterizing - here that is the caller's list.
-        backend: ``"gaff"`` (default) or ``"smirnoff"``; per-ligand with
-            ``LigandSpec(backend=...)``.
+            parameterizing - here that is the caller's list. Must be
+            :data:`~forcefill.CHARMM_BASE_FORCEFIELD` for the charmm backend.
+        backend: ``"gaff"`` (default), ``"smirnoff"`` or ``"charmm"``;
+            per-ligand with ``LigandSpec(backend=...)``.
         atom_type: ``"gaff2"`` (default) or ``"gaff"``. gaff backend only.
         charge_method: antechamber charge method, default ``"bcc"``. gaff only.
         smirnoff_forcefield: SMIRNOFF release for the smirnoff backend.
+        charmm_files: CHARMM topology/parameter files shared by every charmm
+            ligand; per-ligand stream files go in
+            ``LigandSpec(charmm_files=...)`` and are appended after these.
         workdir: Directory for intermediate files. A fresh temporary directory is
             created if not given, and kept unless *cleanup*.
         cleanup: Delete the working directory after a successful build. Refuses
@@ -160,7 +186,8 @@ def build_ligand_xml(
             ``openmm.System`` for each ligand on its own (default).
         minimize: Also energy-minimize each ligand in vacuum, which catches
             unphysical parameters that a System build accepts. Reported in
-            ``minimizations``.
+            ``minimizations``. Not available for the charmm backend, whose
+            input carries no coordinates.
         strict: Raise on a ligand whose geometry is unusable (coincident atoms,
             no conformer) rather than warn.
         antechamber_args: Extra raw antechamber arguments for every ligand.
@@ -185,11 +212,12 @@ def build_ligand_xml(
             antechamber_args=tuple(antechamber_args),
             backend=backend,
             forcefield=smirnoff_forcefield,
+            charmm_files=tuple(charmm_files),
             names=frozenset(requested),
         ),
     )
     for name, spec in specs.items():
-        if not spec.has_explicit_bonds:
+        if not spec.has_source:
             raise ValueError(
                 f"Ligand {name} has no source. With no input structure to "
                 "extract it from, every ligand needs a file or a SMILES: "
@@ -197,18 +225,31 @@ def build_ligand_xml(
                 f"{name}"
                 "': 'lig.sdf'}, ...) or LigandSpec(smiles=...)."
             )
+        if minimize and spec.backend == "charmm":
+            raise ValueError(
+                f"minimize=True cannot be used for ligand {name}: its parameters "
+                "come from CHARMM files, which record internal coordinates "
+                "rather than Cartesian ones, so there is no geometry to "
+                "minimize. Pass minimize=False - validate=True still proves the "
+                "template covers every atom and that no parameter is missing - "
+                "or use build_forcefield_xml() with a structure, where the "
+                "coordinates come from the PDB."
+            )
     log.info("Ligands to parameterize: %s", sorted(specs))
 
     gaff_dat = _pipeline.prepare_gaff_backend(specs, atom_type)
+    _pipeline.check_backends_match_base(specs, base_forcefield)
 
     minimizations: dict[str, MinimizationResult] = {}
     with _pipeline.working_directory(workdir, output_xml, prefix="ligand_ff_", cleanup=cleanup) as wd:
         # No structure, so there is nothing to compare against - but the net
         # charge and the geometry are still read and checked here, before the
         # first antechamber run.
-        specs = preflight_specs(specs, {}, None, wd, strict=strict)
+        specs = preflight_specs(specs, {}, None, wd, strict=strict, base_forcefield=base_forcefield)
 
-        artifacts = _pipeline.parameterize_all(specs, {}, None, wd, gaff_dat=gaff_dat, timeout=timeout)
+        artifacts = _pipeline.parameterize_all(
+            specs, {}, None, wd, gaff_dat=gaff_dat, timeout=timeout, base_forcefield=base_forcefield
+        )
         residue_xmls = {name: art.xml for name, art in artifacts.items()}
 
         combined = _pipeline.combine_residue_xmls(artifacts, specs, gaff_dat, output_xml, wd)
@@ -219,7 +260,7 @@ def build_ligand_xml(
             files = [*base_forcefield, combined]
             forcefield = app.ForceField(*files)
             for name in sorted(specs):
-                topology, positions = _ligand_topology(specs[name], artifacts[name])
+                topology, positions = _ligand_topology(specs[name], artifacts[name], base_forcefield)
                 if validate:
                     validate_forcefield_xml(topology, combined, base_forcefield, forcefield=forcefield)
                 if minimize:

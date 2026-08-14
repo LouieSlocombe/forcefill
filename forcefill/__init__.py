@@ -3,6 +3,7 @@ from importlib import metadata as _metadata
 from ._pipeline import ParameterizationResult
 from ._spec import (
     BACKENDS,
+    CHARMM_BASE_FORCEFIELD,
     DEFAULT_BASE_FORCEFIELD,
     DEFAULT_SMIRNOFF_FORCEFIELD,
     LigandSpec,
@@ -43,13 +44,15 @@ except _metadata.PackageNotFoundError:  # uninstalled checkout
     __version__ = "0.0.0+unknown"
 
 # The reading and conversion helpers stay behind their modules rather than being
-# re-exported: `forcefill.ligand_files.inspect_ligand_file(...)` and
-# `forcefill.smirnoff.installed_smirnoff_forcefields()` say where they belong,
-# and the top level stays about the pipeline.
+# re-exported: `forcefill.ligand_files.inspect_ligand_file(...)`,
+# `forcefill.smirnoff.installed_smirnoff_forcefields()` and
+# `forcefill.charmm.read_charmm_files(...)` say where they belong, and the top
+# level stays about the pipeline.
 __all__ = [
     "ADDITIVE_RESIDUES",
     "BACKENDS",
     "BULK_ION_RESIDUES",
+    "CHARMM_BASE_FORCEFIELD",
     "DEFAULT_AMBERTOOLS_TIMEOUT",
     "DEFAULT_BASE_FORCEFIELD",
     "DEFAULT_MINIMIZATION_PLATFORM",

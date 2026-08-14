@@ -54,6 +54,60 @@ def methanol_positions(xyz=METHANOL_XYZ):
     return unit.Quantity([Vec3(*p) for p in xyz], unit.angstrom)
 
 
+#: 2-chloroethanol, the charmm-backend test ligand, matching
+#: tests/data/chloroethanol_cgenff.str (angstrom, MMFF-optimized). Methanol will
+#: not do here: charmm36.xml carries 814 residue templates including every CGenFF
+#: model compound, so it is matched by the base force field and never reaches a
+#: backend at all. This one is not.
+CHLOROETHANOL_ATOMS = [
+    ("CL1", element.chlorine),
+    ("C1", element.carbon),
+    ("H11", element.hydrogen),
+    ("H12", element.hydrogen),
+    ("C2", element.carbon),
+    ("H21", element.hydrogen),
+    ("H22", element.hydrogen),
+    ("O1", element.oxygen),
+    ("HO1", element.hydrogen),
+]
+
+CHLOROETHANOL_XYZ = [
+    (2.215, -0.681, -0.431),
+    (0.833, 0.228, 0.211),
+    (0.860, 1.239, -0.210),
+    (0.951, 0.325, 1.295),
+    (-0.480, -0.462, -0.129),
+    (-0.531, -1.448, 0.343),
+    (-0.598, -0.595, -1.209),
+    (-1.583, 0.305, 0.350),
+    (-1.667, 1.090, -0.219),
+]
+
+CHLOROETHANOL_BONDS = [
+    ("CL1", "C1"),
+    ("C1", "H11"),
+    ("C1", "H12"),
+    ("C1", "C2"),
+    ("C2", "H21"),
+    ("C2", "H22"),
+    ("C2", "O1"),
+    ("O1", "HO1"),
+]
+
+
+def add_chloroethanol_residue(top, chain_id="A", name="CET", origin=(0.0, 0.0, 0.0)):
+    """Append a 2-chloroethanol residue to *top*; returns its coordinate list (angstrom tuples)."""
+    chain = top.addChain(chain_id)
+    res = top.addResidue(name, chain)
+    atoms = {}
+    for atom_name, elem in CHLOROETHANOL_ATOMS:
+        atoms[atom_name] = top.addAtom(atom_name, elem, res)
+    for a, b in CHLOROETHANOL_BONDS:
+        top.addBond(atoms[a], atoms[b])
+    dx, dy, dz = origin
+    return [(x + dx, y + dy, z + dz) for x, y, z in CHLOROETHANOL_XYZ]
+
+
 def add_broken_gly_residue(top, chain_id="B"):
     """Append a hydrogen-stripped free glycine (standard name, missing atoms -> gets skipped)."""
     chain = top.addChain(chain_id)
@@ -169,6 +223,12 @@ def write_methanol_pdb(path, broken_gly=False):
     if broken_gly:
         xyz += add_broken_gly_residue(top)
     return _write_pdb(path, top, xyz)
+
+
+def write_chloroethanol_pdb(path, name="CET"):
+    """Write 2-chloroethanol as a single hetero residue, for the charmm backend."""
+    top = app.Topology()
+    return _write_pdb(path, top, add_chloroethanol_residue(top, name=name))
 
 
 def write_broken_gly_pdb(path):

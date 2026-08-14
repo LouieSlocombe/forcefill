@@ -46,7 +46,8 @@ WATER_RESIDUES = frozenset(
 )
 
 #: The 20 amino acids plus the protonation variants and caps the Amber force
-#: fields name separately.
+#: fields name separately, and the CHARMM histidine spellings (``HSD``/``HSE``/
+#: ``HSP``, which are CHARMM's ``HID``/``HIE``/``HIP``).
 _AMINO_ACIDS = frozenset(
     [
         "ALA",
@@ -77,13 +78,18 @@ _AMINO_ACIDS = frozenset(
         "HID",
         "HIE",
         "HIP",
+        "HSD",
+        "HSE",
+        "HSP",
         "ACE",
         "NME",
         "NMA",
     ]
 )
 
-#: DNA and RNA residues, including the 3'/5' terminal variants.
+#: DNA and RNA residues, including the 3'/5' terminal variants and the CHARMM
+#: three-letter spellings (``ADE``/``CYT``/``GUA``/``THY``/``URA``), which
+#: charmm36 uses for both DNA and RNA.
 _NUCLEIC_ACIDS = frozenset(
     [
         "DA",
@@ -110,6 +116,11 @@ _NUCLEIC_ACIDS = frozenset(
         "G5",
         "U3",
         "U5",
+        "ADE",
+        "CYT",
+        "GUA",
+        "THY",
+        "URA",
     ]
 )
 
@@ -132,8 +143,10 @@ BULK_ION_RESIDUES = frozenset(
         "POT",
         "LI",
         "LI+",
+        "LIT",
         "RB",
         "RB+",
+        "RUB",
         "CS",
         "CS+",
         "CES",
@@ -174,6 +187,7 @@ STRUCTURAL_METAL_RESIDUES = frozenset(
         "CO",
         "3CO",
         "CD",
+        "CD2",
         "HG",
         "PB",
         "PT",
@@ -181,6 +195,7 @@ STRUCTURAL_METAL_RESIDUES = frozenset(
         "AG",
         "SR",
         "BA",
+        "BAR",
         "MO",
         "W",
         "V",
@@ -208,8 +223,10 @@ ION_ELEMENTS = {
     "POT": "K",
     "LI": "Li",
     "LI+": "Li",
+    "LIT": "Li",
     "RB": "Rb",
     "RB+": "Rb",
+    "RUB": "Rb",
     "CS": "Cs",
     "CS+": "Cs",
     "CES": "Cs",
@@ -237,6 +254,7 @@ ION_ELEMENTS = {
     "CO": "Co",
     "3CO": "Co",
     "CD": "Cd",
+    "CD2": "Cd",
     "HG": "Hg",
     "PB": "Pb",
     "PT": "Pt",
@@ -244,6 +262,7 @@ ION_ELEMENTS = {
     "AG": "Ag",
     "SR": "Sr",
     "BA": "Ba",
+    "BAR": "Ba",
     "MO": "Mo",
     "W": "W",
     "V": "V",

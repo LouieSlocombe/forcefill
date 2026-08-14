@@ -115,6 +115,7 @@ def build_forcefield_xml(
     atom_type: str = "gaff2",
     charge_method: str = "bcc",
     smirnoff_forcefield: str = DEFAULT_SMIRNOFF_FORCEFIELD,
+    charmm_files: Sequence[PathLike] = (),
     workdir: PathLike | None = None,
     cleanup: bool = False,
     validate: bool = True,
@@ -164,17 +165,26 @@ def build_forcefield_xml(
             wrong atom types. The file must contain the *same* atoms and bonds
             (including hydrogens) as the residue in the PDB; *strict* checks
             that up front.
-        backend: ``"gaff"`` (default) for GAFF/GAFF2 through antechamber, or
-            ``"smirnoff"`` for OpenFF through openff-toolkit. SMIRNOFF assigns
+        backend: ``"gaff"`` (default) for GAFF/GAFF2 through antechamber,
+            ``"smirnoff"`` for OpenFF through openff-toolkit, or ``"charmm"`` to
+            convert CGenFF parameters you already have. SMIRNOFF assigns
             parameters from the chemical graph, so every ligand on it needs a
-            ``file`` or ``smiles`` - a PDB residue carries no bond orders. Set
-            it per ligand with ``LigandSpec(backend=...)`` to mix the two.
+            ``file`` or ``smiles`` - a PDB residue carries no bond orders; the
+            charmm backend needs ``charmm_files`` for the same reason. Set it
+            per ligand with ``LigandSpec(backend=...)`` to mix gaff and
+            smirnoff. CHARMM cannot be mixed with either: it scales 1-4
+            interactions differently, and needs *base_forcefield* set to
+            :data:`~forcefill.CHARMM_BASE_FORCEFIELD`.
         atom_type: ``"gaff2"`` (default) or ``"gaff"``. gaff backend only.
         charge_method: antechamber charge method, default ``"bcc"`` (AM1-BCC).
             gaff backend only.
         smirnoff_forcefield: SMIRNOFF release for the smirnoff backend, default
             :data:`~forcefill.DEFAULT_SMIRNOFF_FORCEFIELD`. See
             ``forcefill.smirnoff.installed_smirnoff_forcefields()``.
+        charmm_files: CHARMM topology/parameter files shared by every charmm
+            ligand, e.g. an extra ``par_all36_cgenff.prm``. Per-ligand stream
+            files go in ``LigandSpec(charmm_files=...)`` and are appended after
+            these. charmm backend only.
         workdir: Directory for intermediate files (per-residue PDB, mol2,
             frcmod, per-residue XML). A fresh temporary directory is created
             if not given; its path is reported in the result and it is kept
@@ -277,12 +287,15 @@ def build_forcefield_xml(
             antechamber_args=tuple(antechamber_args),
             backend=backend,
             forcefield=smirnoff_forcefield,
+            charmm_files=tuple(charmm_files),
             names=frozenset(to_param),
         ),
     )
 
-    # Fail early if the tools a backend needs are absent.
+    # Fail early if the tools a backend needs are absent, or if the base force
+    # field is one its output could never be loaded with.
     gaff_dat = _pipeline.prepare_gaff_backend(specs, atom_type)
+    _pipeline.check_backends_match_base(specs, base_forcefield)
 
     minimizations: dict[str, MinimizationResult] = {}
     full_minimization: MinimizationResult | None = None
@@ -290,9 +303,11 @@ def build_forcefield_xml(
         # Everything checkable is checked before the first expensive call, so a
         # mistake in the last ligand does not cost the parameterization of the
         # first - antechamber's AM1-BCC can take an hour per ligand.
-        specs = preflight_specs(specs, to_param, positions, wd, strict=strict)
+        specs = preflight_specs(specs, to_param, positions, wd, strict=strict, base_forcefield=base_forcefield)
 
-        artifacts = _pipeline.parameterize_all(specs, to_param, positions, wd, gaff_dat=gaff_dat, timeout=timeout)
+        artifacts = _pipeline.parameterize_all(
+            specs, to_param, positions, wd, gaff_dat=gaff_dat, timeout=timeout, base_forcefield=base_forcefield
+        )
         residue_xmls = {name: art.xml for name, art in artifacts.items()}
 
         combined = _pipeline.combine_residue_xmls(artifacts, specs, gaff_dat, output_xml, wd)

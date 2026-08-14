@@ -22,23 +22,33 @@ from __future__ import annotations
 import logging
 import shutil
 import tempfile
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from openmm import app, unit
 
-from . import amber, smirnoff
-from ._spec import PathLike, ResolvedSpec
+from . import amber, charmm, smirnoff
+from ._spec import CHARMM_BASE_FORCEFIELD, DEFAULT_BASE_FORCEFIELD, PathLike, ResolvedSpec
 from .checks import MinimizationResult
 from .clean_structure import CleaningResult
-from .merge import merge_ffxml
+from .merge import _SCALE_TOLERANCE, merge_ffxml
 from .topology import extract_residue_to_pdb
 
 log = logging.getLogger(__name__)
 
 __all__ = ["ParameterizationResult"]
+
+#: 1-4 scaling each backend's output declares. The Amber pair is what ParmEd
+#: writes from ``gaff*.dat`` and what openmmforcefields writes for SMIRNOFF; the
+#: CHARMM pair is what ParmEd writes from a ``CharmmParameterSet``. Compared
+#: against the base force field by :func:`check_backends_match_base`.
+_BACKEND_14_SCALES = {
+    "gaff": (0.8333333333333334, 0.5),
+    "smirnoff": (0.8333333333333334, 0.5),
+    "charmm": (1.0, 1.0),
+}
 
 
 @dataclass
@@ -105,6 +115,63 @@ def prepare_gaff_backend(specs: Mapping[str, ResolvedSpec], atom_type: str) -> s
     return gaff_dat
 
 
+def check_backends_match_base(specs: Mapping[str, ResolvedSpec], base_forcefield: Sequence[str]) -> None:
+    """Refuse a combination OpenMM could never load, before anything expensive runs.
+
+    Amber-family force fields scale 1-4 interactions by 0.8333/0.5 and CHARMM by
+    1.0/1.0, and OpenMM rejects any ``ForceField`` whose files disagree - within
+    one document as much as across several. So two combinations are impossible
+    rather than merely inadvisable, and both are worth naming here rather than
+    leaving to OpenMM's "Found multiple NonbondedForce tags with different 1-4
+    scales" an hour into a build:
+
+        * a charmm ligand mixed with a gaff or smirnoff one, whose merged XML
+          could not be loaded at all;
+        * a backend whose output does not match the base force field it is being
+          validated against.
+
+    The base force field's convention is read from the loaded force field, so a
+    custom one is checked as accurately as the two named presets.
+    """
+    backends = {spec.backend for spec in specs.values()}
+    if not backends:
+        return
+    charmm_names = sorted(name for name, spec in specs.items() if spec.backend == "charmm")
+    amber_names = sorted(name for name, spec in specs.items() if spec.backend != "charmm")
+    if charmm_names and amber_names:
+        raise ValueError(
+            f"Cannot build one force field from both CHARMM and Amber-family "
+            f"parameters: {charmm_names} use the charmm backend and {amber_names} "
+            f"use {sorted(backends - {'charmm'})}. The two conventions scale 1-4 "
+            "interactions differently (CHARMM 1.0/1.0, Amber 0.8333/0.5) and "
+            "OpenMM will not load a force field that says both. Build them "
+            "separately, against their own base force fields."
+        )
+
+    # Only one family is in play now, and gaff and smirnoff share a convention,
+    # so any one backend answers for all of them.
+    expected = _BACKEND_14_SCALES["charmm" if charmm_names else "gaff"]
+    actual = charmm.base_14_scales(base_forcefield)
+    # None: the base force field declares no non-bonded terms at all, so there is
+    # nothing for the generated XML to contradict.
+    if actual is None or _scales_agree(expected, actual):
+        return
+    wanted = CHARMM_BASE_FORCEFIELD if charmm_names else DEFAULT_BASE_FORCEFIELD
+    raise ValueError(
+        f"The {'/'.join(sorted(backends))} backend produces parameters with 1-4 "
+        f"scaling {expected[0]:g}/{expected[1]:g} (coulomb/lj), but the base force "
+        f"field {list(base_forcefield)} declares {actual[0]:g}/{actual[1]:g}. OpenMM "
+        "cannot load the two together, so the generated XML would be unusable "
+        f"even though it built. Pass base_forcefield={list(wanted)}, or switch "
+        "backend to match the base force field you want."
+    )
+
+
+def _scales_agree(expected: tuple[float, float], actual: tuple[float, float]) -> bool:
+    """Compare 1-4 scales with the tolerance OpenMM itself applies when merging them."""
+    return all(abs(a - b) <= _SCALE_TOLERANCE for a, b in zip(expected, actual, strict=True))
+
+
 @contextmanager
 def working_directory(
     workdir: PathLike | None,
@@ -154,12 +221,16 @@ def parameterize_one_residue(
     *,
     gaff_dat: str | None = None,
     timeout: float | None = amber.DEFAULT_AMBERTOOLS_TIMEOUT,
+    base_forcefield: Sequence[str] = DEFAULT_BASE_FORCEFIELD,
 ) -> ResidueArtifacts:
     """Run one residue through its backend to a self-contained per-residue XML.
 
     For ``gaff`` that is extract -> antechamber -> parmchk2 -> ParmEd; a
     ``spec.file`` (SDF/MOL2 with explicit bonds) replaces the extraction step.
-    For ``smirnoff`` it is a single call into openmmforcefields. *residue* and
+    For ``smirnoff`` it is a single call into openmmforcefields, and for
+    ``charmm`` a conversion of the ligand's own CGenFF files - which is the one
+    output that is *not* self-contained, since it names atom types
+    *base_forcefield* defines rather than redefining them. *residue* and
     *positions* are None in standalone mode, where there is no input structure
     to extract from.
     """
@@ -168,6 +239,9 @@ def parameterize_one_residue(
 
     if spec.backend == "smirnoff":
         return ResidueArtifacts(xml=smirnoff.smirnoff_residue_ffxml(spec, res_dir / f"{name}.xml"))
+
+    if spec.backend == "charmm":
+        return ResidueArtifacts(xml=charmm.charmm_residue_ffxml(spec, res_dir / f"{name}.xml", base_forcefield))
 
     if spec.file is None:
         if residue is None or positions is None:
@@ -210,13 +284,13 @@ def combine_residue_xmls(
     """Write the one XML covering every parameterized residue.
 
     All-GAFF goes through ParmEd, which merges at the parameter-set level and
-    writes only the atom types the templates actually use. Anything involving
-    the smirnoff backend is merged as finished XML instead - the two backends
-    share nothing upstream of that.
+    writes only the atom types the templates actually use. Anything else is
+    merged as finished XML instead - gaff, smirnoff and charmm share nothing
+    upstream of that.
     """
     gaff = {name for name, spec in specs.items() if spec.backend == "gaff"}
-    smirnoff_names = sorted(set(specs) - gaff)
-    if not smirnoff_names:
+    other_names = sorted(set(specs) - gaff)
+    if not other_names:
         return amber.assemble_openmm_ffxml(
             {name: artifacts[name].mol2 for name in sorted(gaff)},
             [gaff_dat, *(artifacts[name].frcmod for name in sorted(gaff))],
@@ -234,7 +308,7 @@ def combine_residue_xmls(
                 workdir / "_gaff_combined.xml",
             )
         )
-    to_merge += [artifacts[name].xml for name in smirnoff_names]
+    to_merge += [artifacts[name].xml for name in other_names]
     return merge_ffxml(to_merge, output_xml)
 
 
@@ -246,6 +320,7 @@ def parameterize_all(
     *,
     gaff_dat: str | None,
     timeout: float | None,
+    base_forcefield: Sequence[str] = DEFAULT_BASE_FORCEFIELD,
 ) -> dict[str, ResidueArtifacts]:
     """Run every spec through its backend, in a stable order."""
     return {
@@ -256,6 +331,7 @@ def parameterize_all(
             workdir / name,
             gaff_dat=gaff_dat,
             timeout=timeout,
+            base_forcefield=base_forcefield,
         )
         for name in sorted(specs)
     }
