@@ -23,7 +23,6 @@ from __future__ import annotations
 
 import logging
 import math
-import os
 from collections import Counter
 from collections.abc import Iterator
 from dataclasses import dataclass, field
@@ -34,6 +33,8 @@ from openmm import app, unit
 from parmed.modeller import ResidueTemplateContainer
 from rdkit import Chem, RDLogger
 from rdkit.Chem import AllChem
+
+from ._spec import PathLike
 
 log = logging.getLogger(__name__)
 
@@ -48,8 +49,6 @@ __all__ = [
     "smiles_with_residue_geometry",
     "split_multi_sdf",
 ]
-
-PathLike = str | os.PathLike
 
 #: Suffixes :func:`inspect_ligand_file` knows how to read.
 _READABLE = {".sdf", ".sd", ".mol", ".mol2", ".pdb"}
@@ -478,6 +477,18 @@ def _close_pairs(
 # --------------------------------------------------------------------------
 
 
+def _write_sdf(mol, out_sdf: PathLike) -> str:  # mol is an rdkit Mol
+    """Write one molecule to *out_sdf*, creating its parent directory."""
+    out_sdf = Path(out_sdf)
+    out_sdf.parent.mkdir(parents=True, exist_ok=True)
+    writer = Chem.SDWriter(str(out_sdf))
+    try:
+        writer.write(mol)
+    finally:
+        writer.close()
+    return str(out_sdf)
+
+
 def smiles_to_sdf(smiles: str, out_sdf: PathLike, name: str = "LIG", *, random_seed: int = 0xF0) -> str:
     """Embed *smiles* as a 3D SDF with explicit hydrogens and return the path.
 
@@ -504,15 +515,9 @@ def smiles_to_sdf(smiles: str, out_sdf: PathLike, name: str = "LIG", *, random_s
     AllChem.MMFFOptimizeMolecule(mol)
     mol.SetProp("_Name", name)
 
-    out_sdf = Path(out_sdf)
-    out_sdf.parent.mkdir(parents=True, exist_ok=True)
-    writer = Chem.SDWriter(str(out_sdf))
-    try:
-        writer.write(mol)
-    finally:
-        writer.close()
+    out_sdf = _write_sdf(mol, out_sdf)
     log.info("Embedded %s from SMILES %r: %s", name, smiles, out_sdf)
-    return str(out_sdf)
+    return out_sdf
 
 
 def smiles_with_residue_geometry(
@@ -551,15 +556,9 @@ def smiles_with_residue_geometry(
         ) from exc
     mol.SetProp("_Name", name)
 
-    out_sdf = Path(out_sdf)
-    out_sdf.parent.mkdir(parents=True, exist_ok=True)
-    writer = Chem.SDWriter(str(out_sdf))
-    try:
-        writer.write(mol)
-    finally:
-        writer.close()
+    out_sdf = _write_sdf(mol, out_sdf)
     log.info("Applied the SMILES bond orders for %s to the structure's geometry: %s", name, out_sdf)
-    return str(out_sdf)
+    return out_sdf
 
 
 def split_multi_sdf(path: PathLike, outdir: PathLike) -> dict[str, str]:

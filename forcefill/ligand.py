@@ -24,46 +24,32 @@ from __future__ import annotations
 
 import logging
 import os
-import shutil
-import tempfile
 from collections.abc import Mapping, Sequence
-from pathlib import Path
 
 from openmm import app, unit
 
-from . import ligand_files, smirnoff
+from . import _pipeline, ligand_files, smirnoff
+from ._pipeline import ParameterizationResult, ResidueArtifacts
 from ._spec import (
     ATOM_TYPES,
     BACKENDS,
     CHARGE_METHODS,
+    DEFAULT_BASE_FORCEFIELD,
     DEFAULT_SMIRNOFF_FORCEFIELD,
     LigandSpec,
+    PathLike,
     ResolvedSpec,
     _Defaults,
+    check_choice,
     resolve_specs,
 )
-from ._spec import check_choice as _check_choice
-from .nonstandard_ffxml import (
-    DEFAULT_AMBERTOOLS_TIMEOUT,
-    DEFAULT_BASE_FORCEFIELD,
-    MinimizationResult,
-    ParameterizationResult,
-    _combine_residue_xmls,
-    _load_residue_template,
-    _parameterize_one_residue,
-    _require_executable,
-    _ResidueArtifacts,
-    locate_gaff_dat,
-    minimize_with_forcefield_xml,
-    preflight_specs,
-    validate_forcefield_xml,
-)
+from .amber import DEFAULT_AMBERTOOLS_TIMEOUT, load_residue_template
+from .checks import MinimizationResult, minimize_with_forcefield_xml, validate_forcefield_xml
+from .preflight import preflight_specs
 
 log = logging.getLogger(__name__)
 
 __all__ = ["build_ligand_xml"]
-
-PathLike = str | os.PathLike
 
 #: What :func:`build_ligand_xml` accepts as its first argument.
 LigandInput = PathLike | LigandSpec | Sequence[PathLike | LigandSpec] | Mapping[str, LigandSpec | PathLike]
@@ -116,7 +102,7 @@ def _normalize_ligands(ligands: LigandInput) -> dict[str, LigandSpec]:
     return out
 
 
-def _ligand_topology(spec: ResolvedSpec, artifacts: _ResidueArtifacts) -> tuple[app.Topology, unit.Quantity]:
+def _ligand_topology(spec: ResolvedSpec, artifacts: ResidueArtifacts) -> tuple[app.Topology, unit.Quantity]:
     """Topology and coordinates for validating one ligand on its own.
 
     For gaff that comes from the mol2 antechamber wrote, which is the molecule as
@@ -124,7 +110,7 @@ def _ligand_topology(spec: ResolvedSpec, artifacts: _ResidueArtifacts) -> tuple[
     """
     if artifacts.mol2 is None:
         return smirnoff.ligand_topology(spec)
-    structure = _load_residue_template(artifacts.mol2, spec.name).to_structure()
+    structure = load_residue_template(artifacts.mol2, spec.name).to_structure()
     topology = structure.topology
     for residue in topology.residues():
         residue.name = spec.name
@@ -186,9 +172,9 @@ def build_ligand_xml(
         ``full_minimization`` are always empty here - there is no input
         structure to skip residues from, clean, or minimize as a whole.
     """
-    _check_choice(atom_type, ATOM_TYPES, "atom_type")
-    _check_choice(charge_method, CHARGE_METHODS, "charge_method")
-    _check_choice(backend, BACKENDS, "backend")
+    check_choice(atom_type, ATOM_TYPES, "atom_type")
+    check_choice(charge_method, CHARGE_METHODS, "charge_method")
+    check_choice(backend, BACKENDS, "backend")
 
     requested = _normalize_ligands(ligands)
     specs = resolve_specs(
@@ -213,39 +199,19 @@ def build_ligand_xml(
             )
     log.info("Ligands to parameterize: %s", sorted(specs))
 
-    gaff_dat: str | None = None
-    if any(spec.backend == "gaff" for spec in specs.values()):
-        _require_executable("antechamber")
-        _require_executable("parmchk2")
-        gaff_dat = locate_gaff_dat(atom_type)
-        log.info("Using GAFF parameter database: %s", gaff_dat)
+    gaff_dat = _pipeline.prepare_gaff_backend(specs, atom_type)
 
-    workdir = Path(workdir).resolve() if workdir is not None else Path(tempfile.mkdtemp(prefix="ligand_ff_"))
-    workdir.mkdir(parents=True, exist_ok=True)
-    log.info("Intermediate files in %s", workdir)
-    if cleanup and Path(output_xml).resolve().is_relative_to(workdir):
-        raise ValueError(
-            f"cleanup=True would delete the output XML: {output_xml} resolves "
-            f"inside the working directory {workdir}. Write it elsewhere or "
-            "pass cleanup=False."
-        )
-
-    try:
+    minimizations: dict[str, MinimizationResult] = {}
+    with _pipeline.working_directory(workdir, output_xml, prefix="ligand_ff_", cleanup=cleanup) as wd:
         # No structure, so there is nothing to compare against - but the net
         # charge and the geometry are still read and checked here, before the
         # first antechamber run.
-        specs = preflight_specs(specs, {}, None, workdir, strict=strict)
+        specs = preflight_specs(specs, {}, None, wd, strict=strict)
 
-        artifacts: dict[str, _ResidueArtifacts] = {}
-        residue_xmls: dict[str, str] = {}
-        minimizations: dict[str, MinimizationResult] = {}
-        for name in sorted(specs):
-            artifacts[name] = _parameterize_one_residue(
-                specs[name], None, None, workdir / name, gaff_dat=gaff_dat, timeout=timeout
-            )
-            residue_xmls[name] = artifacts[name].xml
+        artifacts = _pipeline.parameterize_all(specs, {}, None, wd, gaff_dat=gaff_dat, timeout=timeout)
+        residue_xmls = {name: art.xml for name, art in artifacts.items()}
 
-        combined = _combine_residue_xmls(artifacts, specs, gaff_dat, output_xml, workdir)
+        combined = _pipeline.combine_residue_xmls(artifacts, specs, gaff_dat, output_xml, wd)
         log.info("Wrote combined force-field XML: %s", combined)
 
         if validate or minimize:
@@ -260,20 +226,11 @@ def build_ligand_xml(
                     minimizations[name] = minimize_with_forcefield_xml(
                         topology, positions, combined, base_forcefield, forcefield=forcefield
                     )
-    except Exception:
-        # Never delete on failure: sqm.out and the intermediates are the post-mortem.
-        log.warning("Intermediate files kept for debugging in %s", workdir)
-        raise
-
-    if cleanup:
-        shutil.rmtree(workdir)
-        log.info("Removed working directory %s", workdir)
-        residue_xmls = {}
 
     return ParameterizationResult(
         forcefield_xml=combined,
-        residue_xmls=residue_xmls,
+        residue_xmls={} if cleanup else residue_xmls,
         parameterized=sorted(artifacts),
-        workdir=None if cleanup else str(workdir),
+        workdir=None if cleanup else str(wd),
         minimizations=minimizations,
     )

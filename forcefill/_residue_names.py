@@ -1,8 +1,8 @@
 """PDB residue-name tables shared by the parameterization and cleaning steps.
 
 Pure data: this module imports nothing from the rest of the package, so both
-:mod:`forcefill.nonstandard_ffxml` and :mod:`forcefill.clean_structure` can
-depend on it without a cycle.
+:mod:`forcefill.topology` and :mod:`forcefill.clean_structure` can depend on it
+without a cycle.
 
 The names are PDB chemical component IDs (the residue-name column, 18-20), not
 element symbols and not atom names. That distinction matters most for ``CA``:

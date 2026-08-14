@@ -16,8 +16,7 @@ pytest.importorskip("parmed")
 
 from openmm import app
 
-from forcefill import build_forcefield_xml, build_ligand_xml
-from forcefill.nonstandard_ffxml import locate_gaff_dat
+from forcefill import build_forcefield_xml, build_ligand_xml, locate_gaff_dat
 from tests.helpers import write_methanol_pdb, write_methanol_sdf
 
 

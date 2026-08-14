@@ -10,7 +10,7 @@ What it removes, by default:
     * **crystallization additives** - cryoprotectants (``GOL``, ``EDO``,
       ``PEG``), solvents (``DMS``), buffers (``EPE``, ``TRS``), precipitants
       (``SO4``, ``PO4``, ``ACT``) and reductants (``BME``, ``DTT``). Left in
-      place these are exactly what :func:`~forcefill.build_forcefield_xml`
+      place these are exactly what :func:`forcefill.build_forcefield_xml`
       sends to antechamber - a free-standing hetero molecule looks like a
       ligand - so a raw crystal structure burns AM1-BCC cycles on glycerol,
       and since X-ray additives carry no hydrogens the resulting charges are
@@ -52,7 +52,6 @@ Example:
 from __future__ import annotations
 
 import logging
-import os
 from collections import defaultdict
 from collections.abc import Iterable
 from dataclasses import dataclass, field
@@ -68,6 +67,7 @@ from ._residue_names import (
     STRUCTURAL_METAL_RESIDUES,
     WATER_RESIDUES,
 )
+from ._spec import PathLike
 
 log = logging.getLogger(__name__)
 
@@ -80,8 +80,6 @@ __all__ = [
     "clean_pdb",
     "clean_topology",
 ]
-
-PathLike = str | os.PathLike
 
 #: Largest residue still accepted as a water molecule. Three real atoms, plus
 #: the virtual site of a 4- or 5-site model (TIP4P's ``M``, TIP5P's ``EP``),

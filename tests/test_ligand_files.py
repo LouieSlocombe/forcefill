@@ -26,9 +26,8 @@ from forcefill.ligand_files import (
     smiles_with_residue_geometry,
     split_multi_sdf,
 )
-from tests.helpers import write_methanol_pdb, write_methanol_sdf
+from tests.helpers import DATA, write_methanol_pdb, write_methanol_sdf
 
-DATA = Path(__file__).parent / "data"
 EXAMPLES = Path(__file__).parent.parent / "examples" / "data"
 
 #: Benzamidinium: 18 atoms, C7H9N2, formal charge +1 via an ``M  CHG`` record.

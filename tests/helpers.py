@@ -5,6 +5,9 @@ from pathlib import Path
 from openmm import Vec3, app, unit
 from openmm.app import element
 
+#: Committed fixtures: byte-for-byte AmberTools output the assembly tests read.
+DATA = Path(__file__).parent / "data"
+
 #: Idealized methanol geometry, matching tests/data/methanol.mol2 (angstrom).
 METHANOL_XYZ = [
     (0.000, 0.000, 0.000),
@@ -37,6 +40,18 @@ def add_methanol_residue(top, chain_id="A", name="LIG"):
     for a, b in METHANOL_BONDS:
         top.addBond(atoms[a], atoms[b])
     return list(METHANOL_XYZ)
+
+
+def methanol_residue(name="LIG"):
+    """A lone methanol residue in a topology of its own, reachable as ``residue.chain.topology``."""
+    top = app.Topology()
+    add_methanol_residue(top, name=name)
+    return next(top.residues())
+
+
+def methanol_positions(xyz=METHANOL_XYZ):
+    """Methanol's coordinates as an OpenMM Quantity, in angstrom."""
+    return unit.Quantity([Vec3(*p) for p in xyz], unit.angstrom)
 
 
 def add_broken_gly_residue(top, chain_id="B"):

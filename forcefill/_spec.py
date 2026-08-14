@@ -17,7 +17,9 @@ winner: a disagreement there is exactly the kind of thing that produces
 plausible-but-wrong charges.
 
 This module is pure data and validation. Like :mod:`forcefill._residue_names` it
-imports nothing else from the package, so every other module can depend on it.
+imports nothing else from the package, so every other module can depend on it -
+which is why the shared :data:`PathLike` alias and the settings more than one
+module needs live here too.
 """
 
 from __future__ import annotations
@@ -30,11 +32,16 @@ from dataclasses import dataclass, field, replace
 #: pipeline's internal form and stay importable from this module only.
 __all__ = [
     "BACKENDS",
+    "DEFAULT_BASE_FORCEFIELD",
     "DEFAULT_SMIRNOFF_FORCEFIELD",
     "LigandSpec",
 ]
 
 PathLike = str | os.PathLike
+
+#: Base force field used to decide what counts as "non-standard", and loaded
+#: underneath the generated XML for the validation and minimization checks.
+DEFAULT_BASE_FORCEFIELD = ("amber14-all.xml", "amber14/tip3p.xml")
 
 #: Parameterization backends. ``"gaff"`` is antechamber + parmchk2 + ParmEd;
 #: ``"smirnoff"`` is openff-toolkit + openmmforcefields.

@@ -1,6 +1,6 @@
 """Parameterize a ligand with a SMIRNOFF force field (OpenFF Sage) instead of GAFF.
 
-The alternative to the AmberTools path in :mod:`forcefill.nonstandard_ffxml`.
+The alternative to the AmberTools path in :mod:`forcefill.amber`.
 Where GAFF assigns atom types from a perceived bond graph and derives charges
 with AM1-BCC through ``sqm``, SMIRNOFF assigns parameters by matching SMARTS
 patterns directly against the chemical graph - there are no atom types to get
@@ -27,20 +27,17 @@ the stack.
 from __future__ import annotations
 
 import logging
-import os
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
 from openff.toolkit import Molecule
 from openmmforcefields.generators import SMIRNOFFTemplateGenerator
 
-from ._spec import ResolvedSpec
+from ._spec import PathLike, ResolvedSpec
 
 log = logging.getLogger(__name__)
 
 __all__ = ["installed_smirnoff_forcefields", "ligand_topology", "smirnoff_residue_ffxml"]
-
-PathLike = str | os.PathLike
 
 #: File suffixes ``openff.toolkit.Molecule.from_file`` reads reliably. MOL2 is
 #: accepted but discouraged: the toolkit reads it through RDKit, whose MOL2
