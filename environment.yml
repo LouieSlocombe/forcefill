@@ -18,6 +18,13 @@ dependencies:
   - openmm
   - parmed
   - ambertools
+  # Optional at run time (forcefill imports them lazily), but installed here so
+  # the test suite exercises the SMILES input and the SMIRNOFF backend rather
+  # than skipping them. If conda-forge cannot solve these for a given Python,
+  # drop them rather than pinning the rest of the environment back.
+  - rdkit
+  - openff-toolkit
+  - openmmforcefields
   - pytest
   - pytest-cov
   - python-build

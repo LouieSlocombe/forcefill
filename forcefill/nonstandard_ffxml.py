@@ -15,20 +15,31 @@ Pipeline:
          derivation, e.g. with pyRED or ffparam-style workflows)
        * free-standing hetero molecules (ligands, cofactors) -> parameterized
 
-    3. Each unique parameterizable residue is written to its own PDB and run
-       through AmberTools:
+    3. Everything checkable is checked, before anything expensive runs: the net
+       charge is read from any supplied ligand file, that file is confirmed to
+       describe the same molecule as the residue, and the geometry is checked
+       for the faults that produce NaN energies. See :func:`preflight_specs`.
+
+    4. Each unique parameterizable residue goes through its backend. With
+       ``backend="gaff"`` (the default) that is AmberTools:
 
        * ``antechamber``  assigns GAFF/GAFF2 atom types + AM1-BCC charges
          (-> ``<RES>.mol2`` residue template)
        * ``parmchk2``     generates any GAFF parameters that are missing
          (-> ``<RES>.frcmod``)
 
-    4. ParmEd merges the GAFF parameter database, the frcmod files and the mol2
+       With ``backend="smirnoff"`` it is openff-toolkit and openmmforcefields
+       instead; see :mod:`forcefill.smirnoff`.
+
+    5. ParmEd merges the GAFF parameter database, the frcmod files and the mol2
        templates into OpenMM ffxml: one XML per residue plus one combined XML
        containing every residue (atom types, residue templates with charges,
-       bonds/angles/torsions and nonbonded parameters).
+       bonds/angles/torsions and nonbonded parameters). Where the smirnoff
+       backend is involved the combined file is produced by
+       :func:`merge_ffxml`, which merges finished XML rather than parameter
+       sets - the two backends share nothing upstream of that.
 
-    5. The combined XML is validated by building an ``openmm.System`` from
+    6. The combined XML is validated by building an ``openmm.System`` from
        ``base force field + new XML`` for each parameterized residue on its
        own; when no residues were skipped, a System for the full input
        topology is built as well. With ``minimize=True`` each of those is also
@@ -37,8 +48,10 @@ Pipeline:
 
 Requirements:
     * ``openmm >= 7.6`` and ``parmed >= 3.4`` (``pip install openmm parmed``)
-    * AmberTools (``antechamber``, ``parmchk2``) on ``PATH`` for step 3, e.g.
-      ``conda install -c conda-forge ambertools``
+    * AmberTools (``antechamber``, ``parmchk2``) on ``PATH`` for the gaff
+      backend, e.g. ``conda install -c conda-forge ambertools``
+    * ``openff-toolkit`` and ``openmmforcefields`` for the smirnoff backend;
+      ``rdkit`` for SMILES input. Both optional and imported lazily.
 
 Example:
     >>> from forcefill import build_forcefield_xml
@@ -50,6 +63,9 @@ Example:
 
         ff = ForceField("amber14-all.xml", "amber14/tip3p.xml", "extras.xml")
         system = ff.createSystem(pdb.topology, ...)
+
+    To parameterize a ligand with no structure at all, use
+    :func:`forcefill.build_ligand_xml`.
 
 Notes:
     * Crystal structures carry water, buffer ions and crystallization
@@ -73,6 +89,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+import xml.etree.ElementTree as ET
 from collections import defaultdict
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -85,7 +102,12 @@ from parmed.amber import AmberParameterSet
 from parmed.modeller import ResidueTemplate, ResidueTemplateContainer
 from parmed.openmm import OpenMMParameterSet
 
+from . import ligand_files, smirnoff
 from ._residue_names import STANDARD_RESIDUES
+from ._spec import ATOM_TYPES as _ATOM_TYPES
+from ._spec import BACKENDS, DEFAULT_SMIRNOFF_FORCEFIELD, LigandSpec, ResolvedSpec, _Defaults, resolve_specs
+from ._spec import CHARGE_METHODS as _CHARGE_METHODS
+from ._spec import check_choice as _check_choice
 from .clean_structure import CleaningResult, clean_topology
 
 log = logging.getLogger(__name__)
@@ -102,6 +124,7 @@ __all__ = [
     "extract_residue_to_pdb",
     "find_nonstandard_residues",
     "locate_gaff_dat",
+    "merge_ffxml",
     "minimize_with_forcefield_xml",
     "run_antechamber",
     "run_parmchk2",
@@ -127,14 +150,6 @@ DEFAULT_MINIMIZATION_TOLERANCE: float = 10.0
 
 #: Unit the reported forces are converted to.
 _FORCE_UNIT = unit.kilojoule_per_mole / unit.nanometer
-
-#: Valid ``atom_type`` values: each names a parameter database ({atom_type}.dat).
-_ATOM_TYPES = ("gaff", "gaff2")
-
-#: Charge methods antechamber accepts (see ``antechamber -L``). The list is
-#: AmberTools-version-dependent (abcg2 needs >= 23); extend it rather than
-#: bypassing the check if your antechamber knows more.
-_CHARGE_METHODS = ("bcc", "abcg2", "gas", "mul", "cm1", "cm2", "esp", "resp", "rc", "wc", "dc")
 
 #: File suffix -> antechamber -fi format, for run_antechamber's inference.
 _ANTECHAMBER_FORMATS = {
@@ -172,7 +187,13 @@ class MinimizationResult:
 
 @dataclass
 class ParameterizationResult:
-    """What :func:`build_forcefield_xml` produced."""
+    """What :func:`build_forcefield_xml` produced.
+
+    Also the return type of :func:`~forcefill.build_ligand_xml`, where
+    ``skipped``, ``cleaning`` and ``full_minimization`` are always empty: with no
+    input structure there is nothing to skip residues from, clean, or minimize
+    as a whole.
+    """
 
     #: Path to the combined ffxml covering every parameterized residue
     #: (``None`` when nothing needed parameterizing).
@@ -276,8 +297,9 @@ def _warn_unused_overrides(
     multiplicities: Mapping[str, int],
     residue_files: Mapping[str, PathLike] | None = None,
     removed: Iterable[str] = (),
+    ligands: Mapping[str, LigandSpec] | None = None,
 ) -> None:
-    """Warn about net_charges/multiplicities/residue_files keys with no effect.
+    """Warn about ligands/net_charges/multiplicities/residue_files keys with no effect.
 
     A typo'd or case-mismatched key silently leaves the defaults (net
     charge 0, multiplicity 1, PDB extraction), which yields plausible but
@@ -288,6 +310,7 @@ def _warn_unused_overrides(
     """
     removed = set(removed)
     for label, mapping in (
+        ("ligands", ligands or {}),
         ("net_charges", net_charges),
         ("multiplicities", multiplicities),
         ("residue_files", residue_files or {}),
@@ -375,12 +398,6 @@ def extract_residue_to_pdb(
 # --------------------------------------------------------------------------
 # Step 3: AmberTools wrappers
 # --------------------------------------------------------------------------
-
-
-def _check_choice(value: str, valid: Sequence[str], label: str) -> None:
-    """Raise ValueError early for a typo'd option instead of a late, cryptic AmberTools failure."""
-    if value not in valid:
-        raise ValueError(f"{label}={value!r} is not one of {list(valid)}")
 
 
 def _require_executable(name: str) -> str:
@@ -599,6 +616,155 @@ def assemble_openmm_ffxml(
         output_xml.parent.mkdir(parents=True, exist_ok=True)
     provenance = {"Info": "Generated by forcefill (antechamber/parmchk2 + ParmEd)"}
     omm_params.write(str(output_xml), provenance=provenance, write_unused=write_unused)
+    return str(output_xml)
+
+
+#: Tolerance for comparing numeric force-field attributes when merging. Matches
+#: ``openmm.app.forcefield.NonbondedGenerator.SCALETOL``, so a merge that
+#: succeeds here is one OpenMM would also accept across separate files.
+_SCALE_TOLERANCE = 1e-5
+
+
+def _attributes_compatible(a: Mapping[str, str], b: Mapping[str, str]) -> bool:
+    """True when two force sections can be folded into one element.
+
+    Numeric attributes are compared with a tolerance, because the same constant
+    is written to different precision by different producers: Amber's 1-4
+    Coulomb scale comes out of ParmEd as ``0.8333333333333334`` and out of
+    openmmforcefields as ``0.8333333333``. Anything else must match exactly.
+    """
+    if set(a) != set(b):
+        return False
+    for key, left in a.items():
+        right = b[key]
+        if left == right:
+            continue
+        try:
+            if abs(float(left) - float(right)) > _SCALE_TOLERANCE:
+                return False
+        except ValueError:
+            return False
+    return True
+
+
+def _check_no_redefinition(
+    section: ET.Element,
+    incoming: ET.Element,
+    source: PathLike,
+    seen: dict[tuple[str, str], str],
+) -> None:
+    """Raise if *incoming* redefines an atom type or residue template already merged in."""
+    for child in incoming:
+        if child.tag not in ("Type", "Residue"):
+            continue
+        name = child.get("name")
+        if name is None:
+            continue
+        key = (child.tag, name)
+        if key not in seen:
+            seen[key] = str(source)
+            continue
+        previous = seen[key]
+        existing = next(
+            (e for e in section if e.tag == child.tag and e.get("name") == name),
+            None,
+        )
+        if child.tag == "Type" and existing is not None and existing.attrib == child.attrib:
+            continue  # Identical redefinition: harmless, keep the one already there.
+        fix = (
+            "give one of them a different residue name"
+            if child.tag == "Residue"
+            else "regenerate one of them, since forcefill's backends name their atom types uniquely"
+        )
+        raise ValueError(
+            f"Cannot merge {source}: it defines {child.tag.lower()} {name!r}, "
+            f"which {previous} already defines differently. Two force fields "
+            f"cannot share a name for different things - {fix}, or load the "
+            "files separately with ForceField(...) instead of merging them."
+        )
+
+
+def _element_key(element: ET.Element) -> tuple[str, tuple[tuple[str, str], ...]] | None:
+    """Identity of a leaf element for duplicate detection; None for one with children."""
+    if len(element):
+        return None
+    return element.tag, tuple(sorted(element.attrib.items()))
+
+
+def _extend_section(section: ET.Element, incoming: ET.Element) -> None:
+    """Append *incoming*'s children to *section*, dropping exact duplicates of leaf elements.
+
+    Every ffxml this merges declares ``<UseAttributeFromResidue name="charge"/>``
+    - charges live on the residue templates, not the atom types - and OpenMM
+    rejects a second copy of that declaration outright, because it removes the
+    named attribute from the expected list and then cannot find it again. An
+    identical leaf element carries no information the first copy did not, so
+    dropping it is safe for every section, not just that one.
+    """
+    present = {key for child in section if (key := _element_key(child)) is not None}
+    for child in incoming:
+        key = _element_key(child)
+        if key is not None:
+            if key in present:
+                continue
+            present.add(key)
+        section.append(child)
+
+
+def merge_ffxml(xml_files: Sequence[PathLike], output_xml: PathLike) -> str:
+    """Merge finished OpenMM force-field XML documents into one file.
+
+    The counterpart of :func:`assemble_openmm_ffxml`, which merges at the ParmEd
+    parameter-set level and so only works for Amber-style input. This merges the
+    XML itself, which is what mixing backends needs: a GAFF ffxml and a SMIRNOFF
+    ffxml have nothing in common upstream of the XML.
+
+    Sections of the same kind are folded together when their attributes agree,
+    and kept as separate siblings when they do not - which is exactly how OpenMM
+    would see them as separate files. That distinction matters: GAFF and
+    SMIRNOFF impropers use different ``ordering`` conventions, and OpenMM reads
+    ``ordering`` per ``<Improper>`` at parse time, so keeping the two
+    ``<PeriodicTorsionForce>`` sections apart is what preserves both.
+
+    Args:
+        xml_files: Documents to merge, in order. The first to define a name wins.
+        output_xml: Where to write the merged document.
+
+    Returns:
+        The path written, as a string.
+
+    Raises:
+        ValueError: Two documents define the same atom type or residue template
+            differently, or a file is not an OpenMM force-field XML.
+    """
+    xml_files = list(xml_files)
+    if not xml_files:
+        raise ValueError("merge_ffxml needs at least one XML file.")
+
+    root = ET.Element("ForceField")
+    sections: list[ET.Element] = []
+    seen: dict[tuple[str, str], str] = {}
+    for xml_file in xml_files:
+        source_root = ET.parse(str(xml_file)).getroot()
+        if source_root.tag != "ForceField":
+            raise ValueError(f"{xml_file} is not an OpenMM force-field XML (root element is <{source_root.tag}>).")
+        for incoming in source_root:
+            section = next(
+                (s for s in sections if s.tag == incoming.tag and _attributes_compatible(s.attrib, incoming.attrib)),
+                None,
+            )
+            if section is None:
+                section = ET.SubElement(root, incoming.tag, dict(incoming.attrib))
+                sections.append(section)
+            _check_no_redefinition(section, incoming, xml_file, seen)
+            _extend_section(section, incoming)
+
+    output_xml = Path(output_xml)
+    if output_xml.parent != Path(""):
+        output_xml.parent.mkdir(parents=True, exist_ok=True)
+    ET.indent(root)
+    ET.ElementTree(root).write(str(output_xml), encoding="utf-8", xml_declaration=True)
+    log.info("Merged %d force-field XML files into %s", len(xml_files), output_xml)
     return str(output_xml)
 
 
@@ -842,61 +1008,242 @@ def _minimize_parameterized_residues(
 # --------------------------------------------------------------------------
 
 
+@dataclass
+class _ResidueArtifacts:
+    """What parameterizing one residue produced.
+
+    ``mol2``/``frcmod`` are None for the smirnoff backend, which has no
+    intermediate Amber files - only the finished XML is common to both.
+    """
+
+    xml: str
+    mol2: str | None = None
+    frcmod: str | None = None
+
+
 def _parameterize_one_residue(
-    name: str,
-    residue: app.topology.Residue,
-    positions: unit.Quantity,
+    spec: ResolvedSpec,
+    residue: app.topology.Residue | None,
+    positions: unit.Quantity | None,
     res_dir: Path,
     *,
-    gaff_dat: str,
-    net_charge: int,
-    multiplicity: int,
-    atom_type: str,
-    charge_method: str,
-    antechamber_args: Sequence[str],
-    timeout: float | None,
-    input_file: PathLike | None = None,
-) -> tuple[str, str, str]:
-    """Run one residue through extract -> antechamber -> parmchk2 -> per-residue XML.
+    gaff_dat: str | None = None,
+    timeout: float | None = DEFAULT_AMBERTOOLS_TIMEOUT,
+) -> _ResidueArtifacts:
+    """Run one residue through its backend to a self-contained per-residue XML.
 
-    A user-supplied *input_file* (SDF/MOL2 with explicit bonds) replaces the
-    PDB extraction step. Returns ``(mol2_path, frcmod_path,
-    per_residue_xml_path)``, all inside *res_dir*.
+    For ``gaff`` that is extract -> antechamber -> parmchk2 -> ParmEd; a
+    ``spec.file`` (SDF/MOL2 with explicit bonds) replaces the extraction step.
+    For ``smirnoff`` it is a single call into openmmforcefields. *residue* and
+    *positions* are None in standalone mode, where there is no input structure
+    to extract from.
     """
     res_dir.mkdir(parents=True, exist_ok=True)
+    name = spec.name
 
-    if input_file is None:
-        n_hydrogens = sum(1 for a in residue.atoms() if a.element is not None and a.element.symbol == "H")
-        n_heavy = sum(1 for _ in residue.atoms()) - n_hydrogens
-        if n_hydrogens == 0 and n_heavy > 1:
-            log.warning(
-                "Residue %s contains no hydrogens; AM1-BCC charges will be "
-                "wrong unless the molecule really has none. Add explicit "
-                "hydrogens to the ligand before parameterizing.",
-                name,
-            )
+    if spec.backend == "smirnoff":
+        return _ResidueArtifacts(xml=smirnoff.smirnoff_residue_ffxml(spec, res_dir / f"{name}.xml"))
+
+    if spec.file is None:
+        if residue is None or positions is None:
+            raise ValueError(f"Residue {name} has no ligand file and no structure to extract it from.")
         antechamber_input: PathLike = extract_residue_to_pdb(positions, residue, res_dir / f"{name}.pdb")
     else:
-        log.info("Using the supplied ligand file for %s: %s", name, input_file)
-        antechamber_input = input_file
+        log.info("Using the supplied ligand file for %s: %s", name, spec.file)
+        antechamber_input = spec.file
 
-    log.info("antechamber: %s (net charge %+d, %s/%s)", name, net_charge, atom_type, charge_method)
+    # Explicitly against None: a net charge of 0 is a real, stated value, and
+    # `or` would quietly conflate it with "not determined".
+    net_charge = spec.net_charge if spec.net_charge is not None else 0
+    log.info("antechamber: %s (net charge %+d, %s/%s)", name, net_charge, spec.atom_type, spec.charge_method)
     mol2 = run_antechamber(
         antechamber_input,
         res_dir / f"{name}.mol2",
         name,
         net_charge=net_charge,
-        multiplicity=multiplicity,
-        atom_type=atom_type,
-        charge_method=charge_method,
-        extra_args=antechamber_args,
+        multiplicity=spec.multiplicity,
+        atom_type=spec.atom_type,
+        charge_method=spec.charge_method,
+        extra_args=spec.antechamber_args,
         timeout=timeout,
     )
-    frcmod = run_parmchk2(mol2, res_dir / f"{name}.frcmod", atom_type=atom_type, timeout=timeout)
+    frcmod = run_parmchk2(mol2, res_dir / f"{name}.frcmod", atom_type=spec.atom_type, timeout=timeout)
     # Per-residue template XML (self-contained).
+    gaff_dat = gaff_dat or locate_gaff_dat(spec.atom_type)
     xml = assemble_openmm_ffxml({name: mol2}, [gaff_dat, frcmod], res_dir / f"{name}.xml")
     log.info("Wrote per-residue XML: %s", xml)
-    return mol2, frcmod, xml
+    return _ResidueArtifacts(xml=xml, mol2=mol2, frcmod=frcmod)
+
+
+# --------------------------------------------------------------------------
+# Preflight: everything worth knowing before an hour of sqm
+# --------------------------------------------------------------------------
+
+
+def _warn_if_no_hydrogens(name: str, residue: app.topology.Residue) -> None:
+    """Warn about a ligand extracted from a PDB that carries no hydrogens at all."""
+    n_hydrogens = sum(1 for a in residue.atoms() if a.element is not None and a.element.symbol == "H")
+    n_heavy = sum(1 for _ in residue.atoms()) - n_hydrogens
+    if n_hydrogens == 0 and n_heavy > 1:
+        log.warning(
+            "Residue %s contains no hydrogens; AM1-BCC charges will be wrong "
+            "unless the molecule really has none. Add explicit hydrogens to the "
+            "ligand before parameterizing.",
+            name,
+        )
+
+
+def _resolve_smiles(spec: ResolvedSpec, residue: app.topology.Residue | None, positions, res_dir: Path) -> ResolvedSpec:
+    """Embed a spec's SMILES to an SDF and return the spec pointing at it.
+
+    When the residue is also present in the input structure, the structure's
+    coordinates are kept and only the bond orders come from the SMILES - the
+    geometry a crystal structure gives is better than anything embedding
+    produces, and the atom count has to match it anyway.
+    """
+    res_dir.mkdir(parents=True, exist_ok=True)
+    out_sdf = res_dir / f"{spec.name}_smiles.sdf"
+    if residue is None or positions is None:
+        return spec.with_file(ligand_files.smiles_to_sdf(spec.smiles, out_sdf, spec.name))
+    residue_pdb = extract_residue_to_pdb(positions, residue, res_dir / f"{spec.name}_extracted.pdb")
+    return spec.with_file(ligand_files.smiles_with_residue_geometry(spec.smiles, residue_pdb, out_sdf, spec.name))
+
+
+def preflight_specs(
+    specs: Mapping[str, ResolvedSpec],
+    residues: Mapping[str, app.topology.Residue],
+    positions: unit.Quantity | None,
+    workdir: Path,
+    *,
+    strict: bool = True,
+) -> dict[str, ResolvedSpec]:
+    """Check and complete every spec before anything expensive runs.
+
+    Three things go wrong often enough to be worth a dedicated pass, and all
+    three are visible in the input:
+
+    * the net charge is left at 0 while the ligand file says otherwise, which
+      produces plausible and wrong AM1-BCC charges;
+    * the supplied ligand file is not the same molecule as the residue in the
+      structure, which only surfaces at the very end as a template mismatch;
+    * atoms sit on top of each other, which surfaces as a NaN energy.
+
+    Running this first means a mistake in the last ligand does not cost the
+    parameterization of the first. Returns the specs with SMILES resolved to
+    files and inferred net charges filled in.
+
+    Args:
+        specs: Resolved specs, keyed by residue name.
+        residues: The residues as they appear in the input structure; empty in
+            standalone mode.
+        positions: Coordinates for *residues*, or None in standalone mode.
+        workdir: Where a SMILES-derived SDF is written.
+        strict: Raise on a composition or geometry fault rather than warn.
+
+    Returns:
+        ``{residue_name: ResolvedSpec}``, ready to parameterize.
+    """
+    out: dict[str, ResolvedSpec] = {}
+    for name in sorted(specs):
+        spec = specs[name]
+        residue = residues.get(name)
+        if spec.smiles is not None:
+            spec = _resolve_smiles(spec, residue, positions, workdir / name)
+
+        if spec.file is None:
+            if residue is not None:
+                _warn_if_no_hydrogens(name, residue)
+                if positions is not None:
+                    ligand_files.check_geometry(
+                        [tuple(p.value_in_unit(unit.angstrom)) for p in _residue_positions(positions, residue)],
+                        name,
+                        strict=strict,
+                    )
+            out[name] = spec
+            continue
+
+        info = ligand_files.inspect_ligand_file(spec.file)
+        if residue is not None:
+            ligand_files.check_matches_residue(info, residue, name, strict=strict)
+        ligand_files.check_geometry(info.positions, name, strict=strict)
+        out[name] = _apply_net_charge(spec, info)
+    return out
+
+
+def _apply_net_charge(spec: ResolvedSpec, info: ligand_files.LigandFileInfo) -> ResolvedSpec:
+    """Fill in or cross-check the net charge against what the ligand file says.
+
+    A file with real bond orders knows its own formal charge, so leaving
+    ``net_charge`` unset is no longer a silent vote for 0. An explicit value that
+    contradicts the file is refused outright: one of the two is wrong, and
+    guessing which produces exactly the plausible-but-wrong charges this is meant
+    to prevent.
+    """
+    if info.formal_charge is None:
+        if spec.net_charge is None:
+            log.warning(
+                "Could not determine the net charge of %s from %s; assuming 0. "
+                "Pass LigandSpec(net_charge=...) if that is wrong - it is the "
+                "classic source of plausible but wrong AM1-BCC charges.",
+                spec.name,
+                Path(info.path).name,
+            )
+        return spec
+    if spec.net_charge is None:
+        log.warning(
+            "Using net charge %+d for %s, read from %s. Pass LigandSpec(net_charge=...) to override it.",
+            info.formal_charge,
+            spec.name,
+            Path(info.path).name,
+        )
+        return spec.with_net_charge(info.formal_charge)
+    if spec.net_charge != info.formal_charge:
+        raise ValueError(
+            f"Residue {spec.name} was given net_charge={spec.net_charge:+d}, but "
+            f"{Path(info.path).name} describes a molecule with a formal charge "
+            f"of {info.formal_charge:+d}. One of them is wrong, and picking "
+            "either would give charges that look reasonable and are not. Fix the "
+            "protonation state in the ligand file, or correct net_charge."
+        )
+    return spec
+
+
+def _combine_residue_xmls(
+    artifacts: Mapping[str, _ResidueArtifacts],
+    specs: Mapping[str, ResolvedSpec],
+    gaff_dat: str | None,
+    output_xml: PathLike,
+    workdir: Path,
+) -> str:
+    """Write the one XML covering every parameterized residue.
+
+    All-GAFF goes through ParmEd, which merges at the parameter-set level and
+    writes only the atom types the templates actually use. Anything involving
+    the smirnoff backend is merged as finished XML instead - the two backends
+    share nothing upstream of that.
+    """
+    gaff = {name for name, spec in specs.items() if spec.backend == "gaff"}
+    smirnoff_names = sorted(set(specs) - gaff)
+    if not smirnoff_names:
+        return assemble_openmm_ffxml(
+            {name: artifacts[name].mol2 for name in sorted(gaff)},
+            [gaff_dat, *(artifacts[name].frcmod for name in sorted(gaff))],
+            output_xml,
+        )
+
+    to_merge: list[PathLike] = []
+    if gaff:
+        # One ParmEd document for all the GAFF residues, so their shared atom
+        # types are written once, then merged with the SMIRNOFF ones.
+        to_merge.append(
+            assemble_openmm_ffxml(
+                {name: artifacts[name].mol2 for name in sorted(gaff)},
+                [gaff_dat, *(artifacts[name].frcmod for name in sorted(gaff))],
+                workdir / "_gaff_combined.xml",
+            )
+        )
+    to_merge += [artifacts[name].xml for name in smirnoff_names]
+    return merge_ffxml(to_merge, output_xml)
 
 
 def build_forcefield_xml(
@@ -905,15 +1252,19 @@ def build_forcefield_xml(
     *,
     clean_structure: bool = False,
     base_forcefield: Sequence[str] = DEFAULT_BASE_FORCEFIELD,
+    ligands: Mapping[str, LigandSpec] | None = None,
     net_charges: Mapping[str, int] | None = None,
     multiplicities: Mapping[str, int] | None = None,
     residue_files: Mapping[str, PathLike] | None = None,
+    backend: str = "gaff",
     atom_type: str = "gaff2",
     charge_method: str = "bcc",
+    smirnoff_forcefield: str = DEFAULT_SMIRNOFF_FORCEFIELD,
     workdir: PathLike | None = None,
     cleanup: bool = False,
     validate: bool = True,
     minimize: bool = False,
+    strict: bool = True,
     antechamber_args: Sequence[str] = (),
     timeout: float | None = DEFAULT_AMBERTOOLS_TIMEOUT,
 ) -> ParameterizationResult:
@@ -938,9 +1289,17 @@ def build_forcefield_xml(
             stripping a metal - call :func:`~forcefill.clean_pdb` yourself and
             pass the cleaned file in.
         base_forcefield: ffxml files defining what counts as "standard".
-        net_charges: ``{residue_name: net_charge}``; defaults to 0 per
-            residue. Getting this right is essential for sensible AM1-BCC
-            charges.
+        ligands: ``{residue_name: LigandSpec}`` - per-ligand settings. A spec
+            says where the ligand comes from (``file``, ``smiles``) and how to
+            treat it (``net_charge``, ``backend``, ``atom_type``, ...), and
+            leaves everything it does not set to the call-level defaults below.
+            This is the general form of *net_charges* / *multiplicities* /
+            *residue_files*, which still work and are folded in; setting the
+            same thing both ways raises.
+        net_charges: ``{residue_name: net_charge}``. When a ligand is supplied
+            as a file or SMILES its formal charge is read from there, so this is
+            only needed for a residue extracted from the PDB - or to override
+            what the file says, which raises if the two disagree.
         multiplicities: ``{residue_name: spin_multiplicity}``; defaults to 1.
         residue_files: ``{residue_name: ligand_file}`` - parameterize these
             residues from the given SDF/MOL2 (or other antechamber-readable)
@@ -948,10 +1307,19 @@ def build_forcefield_xml(
             bond orders and protonation as drawn avoids antechamber having to
             re-perceive them from PDB geometry, a classic source of silently
             wrong atom types. The file must contain the *same* atoms and bonds
-            (including hydrogens) as the residue in the PDB, or validation
-            fails: the template is still matched against the PDB's bond graph.
-        atom_type: ``"gaff2"`` (default) or ``"gaff"``.
+            (including hydrogens) as the residue in the PDB; *strict* checks
+            that up front.
+        backend: ``"gaff"`` (default) for GAFF/GAFF2 through antechamber, or
+            ``"smirnoff"`` for OpenFF through openff-toolkit. SMIRNOFF assigns
+            parameters from the chemical graph, so every ligand on it needs a
+            ``file`` or ``smiles`` - a PDB residue carries no bond orders. Set
+            it per ligand with ``LigandSpec(backend=...)`` to mix the two.
+        atom_type: ``"gaff2"`` (default) or ``"gaff"``. gaff backend only.
         charge_method: antechamber charge method, default ``"bcc"`` (AM1-BCC).
+            gaff backend only.
+        smirnoff_forcefield: SMIRNOFF release for the smirnoff backend, default
+            :data:`~forcefill.DEFAULT_SMIRNOFF_FORCEFIELD`. See
+            ``forcefill.smirnoff.installed_smirnoff_forcefields()``.
         workdir: Directory for intermediate files (per-residue PDB, mol2,
             frcmod, per-residue XML). A fresh temporary directory is created
             if not given; its path is reported in the result and it is kept
@@ -977,17 +1345,25 @@ def build_forcefield_xml(
             costs an energy evaluation per residue. It subsumes *validate*:
             minimizing implies building the System, just with a less specific
             error message when a template does not match.
+        strict: If True (default), a supplied ligand file that is not the same
+            molecule as the residue in the PDB, or a ligand with atoms on top of
+            each other, is an error - raised before antechamber runs rather than
+            discovered an hour later. Set False to downgrade both to warnings;
+            these are heuristics and the long tail is real.
         antechamber_args: Extra raw arguments appended to the antechamber
             command line (e.g. ``("-dr", "no")`` to relax acdoctor structure
-            checks).
+            checks). Per-ligand additions go in ``LigandSpec.antechamber_args``.
         timeout: Per-invocation ceiling in seconds for each antechamber /
-            parmchk2 run (None disables it). Default one hour.
+            parmchk2 run (None disables it). Default one hour. Does not apply to
+            the smirnoff backend, which runs in-process.
 
     Returns:
         ParameterizationResult
     """
     _check_choice(atom_type, _ATOM_TYPES, "atom_type")
     _check_choice(charge_method, _CHARGE_METHODS, "charge_method")
+    _check_choice(backend, BACKENDS, "backend")
+    ligands = dict(ligands or {})
     net_charges = dict(net_charges or {})
     multiplicities = dict(multiplicities or {})
     residue_files = dict(residue_files or {})
@@ -1026,14 +1402,37 @@ def build_forcefield_xml(
         raise RuntimeError(f"Unmatched residues were found but none can be auto-parameterized:\n{details}")
     log.info("Residues to parameterize: %s", sorted(to_param))
     _warn_unused_overrides(
-        to_param, skipped, net_charges, multiplicities, residue_files, removed=cleaning.removed if cleaning else ()
+        to_param,
+        skipped,
+        net_charges,
+        multiplicities,
+        residue_files,
+        removed=cleaning.removed if cleaning else (),
+        ligands=ligands,
     )
 
-    # Fail early if AmberTools is absent.
-    _require_executable("antechamber")
-    _require_executable("parmchk2")
-    gaff_dat = locate_gaff_dat(atom_type)
-    log.info("Using GAFF parameter database: %s", gaff_dat)
+    specs = resolve_specs(
+        ligands,
+        net_charges=net_charges,
+        multiplicities=multiplicities,
+        residue_files=residue_files,
+        defaults=_Defaults(
+            atom_type=atom_type,
+            charge_method=charge_method,
+            antechamber_args=tuple(antechamber_args),
+            backend=backend,
+            forcefield=smirnoff_forcefield,
+            names=frozenset(to_param),
+        ),
+    )
+
+    # Fail early if the tools a backend needs are absent.
+    gaff_dat: str | None = None
+    if any(spec.backend == "gaff" for spec in specs.values()):
+        _require_executable("antechamber")
+        _require_executable("parmchk2")
+        gaff_dat = locate_gaff_dat(atom_type)
+        log.info("Using GAFF parameter database: %s", gaff_dat)
 
     workdir = Path(workdir).resolve() if workdir is not None else Path(tempfile.mkdtemp(prefix="nonstandard_ff_"))
     workdir.mkdir(parents=True, exist_ok=True)
@@ -1046,28 +1445,27 @@ def build_forcefield_xml(
         )
 
     try:
-        mol2_files: dict[str, str] = {}
-        frcmod_files: dict[str, str] = {}
+        # Everything checkable is checked before the first expensive call, so a
+        # mistake in the last ligand does not cost the parameterization of the
+        # first - antechamber's AM1-BCC can take an hour per ligand.
+        specs = preflight_specs(specs, to_param, positions, workdir, strict=strict)
+
+        artifacts: dict[str, _ResidueArtifacts] = {}
         residue_xmls: dict[str, str] = {}
         minimizations: dict[str, MinimizationResult] = {}
         full_minimization: MinimizationResult | None = None
-        for name in sorted(to_param):
-            mol2_files[name], frcmod_files[name], residue_xmls[name] = _parameterize_one_residue(
-                name,
+        for name in sorted(specs):
+            artifacts[name] = _parameterize_one_residue(
+                specs[name],
                 to_param[name],
                 positions,
                 workdir / name,
                 gaff_dat=gaff_dat,
-                net_charge=net_charges.get(name, 0),
-                multiplicity=multiplicities.get(name, 1),
-                atom_type=atom_type,
-                charge_method=charge_method,
-                antechamber_args=antechamber_args,
                 timeout=timeout,
-                input_file=residue_files.get(name),
             )
+            residue_xmls[name] = artifacts[name].xml
 
-        combined = assemble_openmm_ffxml(mol2_files, [gaff_dat, *frcmod_files.values()], output_xml)
+        combined = _combine_residue_xmls(artifacts, specs, gaff_dat, output_xml, workdir)
         log.info("Wrote combined force-field XML: %s", combined)
 
         if validate or minimize:
@@ -1112,7 +1510,7 @@ def build_forcefield_xml(
     return ParameterizationResult(
         forcefield_xml=combined,
         residue_xmls=residue_xmls,
-        parameterized=sorted(mol2_files),
+        parameterized=sorted(artifacts),
         skipped=skipped,
         workdir=None if cleanup else str(workdir),
         minimizations=minimizations,

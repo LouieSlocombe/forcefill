@@ -2,17 +2,31 @@
 
 [![ci](https://github.com/LouieSlocombe/forcefill/actions/workflows/ci.yml/badge.svg)](https://github.com/LouieSlocombe/forcefill/actions/workflows/ci.yml)
 
-Identify the non-standard residues (ligands, cofactors, hetero molecules) in a
-PDB file and turn them into a ready-to-use [OpenMM](https://openmm.org)
-force-field XML, using AmberTools (`antechamber` GAFF/GAFF2 atom types +
-AM1-BCC charges, `parmchk2` for missing parameters) and
-[ParmEd](https://github.com/ParmEd/ParmEd) for the assembly.
+Turn ligands into a ready-to-use [OpenMM](https://openmm.org) force-field XML —
+either the non-standard residues (ligands, cofactors, hetero molecules) found in
+a PDB, or ligand files on their own. Parameters come from AmberTools
+(`antechamber` GAFF/GAFF2 atom types + AM1-BCC charges, `parmchk2` for missing
+parameters) via [ParmEd](https://github.com/ParmEd/ParmEd), or from
+[OpenFF](https://openforcefield.org) Sage via
+[openmmforcefields](https://github.com/openmm/openmmforcefields).
 
 The output is a plain ffxml file you load alongside the standard force fields:
 
 ```python
 ff = ForceField("amber14-all.xml", "amber14/tip3p.xml", "extras.xml")
 system = ff.createSystem(pdb.topology)
+```
+
+Two ways in, depending on whether you have a structure:
+
+```python
+from forcefill import build_forcefield_xml, build_ligand_xml
+
+# A complex: find what amber14 cannot match and parameterize it
+build_forcefield_xml("complex.pdb", "extras.xml")
+
+# Just the ligand, no structure anywhere
+build_ligand_xml("benzamidinium.sdf", "ben.xml")
 ```
 
 ## What it does
@@ -23,12 +37,15 @@ system = ff.createSystem(pdb.topology)
 2. **Classify** — unmatched residues are triaged; only chemistry that a
    stand-alone GAFF treatment is actually *valid* for gets parameterized
    (see the table below).
-3. **Parameterize** — each unique residue is written to its own PDB and run
-   through `antechamber` (GAFF2 atom types, AM1-BCC charges → `.mol2`) and
-   `parmchk2` (missing parameters → `.frcmod`).
-4. **Assemble** — ParmEd merges the GAFF database, the frcmods and the mol2
+3. **Check** — before anything expensive: the net charge is read from the ligand
+   file, a supplied file is confirmed to be the same molecule as the residue, and
+   the geometry is checked for the faults that produce NaN energies.
+4. **Parameterize** — each unique residue goes through `antechamber` (GAFF2 atom
+   types, AM1-BCC charges → `.mol2`) and `parmchk2` (missing parameters →
+   `.frcmod`), or through OpenFF with `backend="smirnoff"`.
+5. **Assemble** — ParmEd merges the GAFF database, the frcmods and the mol2
    templates into one XML per residue plus one combined XML.
-5. **Validate** — an `openmm.System` is built from `base force field + new
+6. **Validate** — an `openmm.System` is built from `base force field + new
    XML` for every parameterized residue on its own (and for the whole input
    when nothing was skipped), so a template that does not match its residue
    fails loudly here instead of at simulation time. With `minimize=True` each
@@ -129,6 +146,16 @@ pip install forcefill
 Requires Python ≥ 3.10, `openmm >= 7.6`, `parmed >= 3.4`, and the AmberTools
 executables (`antechamber`, `parmchk2`) on `PATH` at run time.
 
+Two optional stacks, both imported lazily so the base install never needs them:
+
+| Want | Install |
+|---|---|
+| SMILES input, sturdier file readers | `conda install -c conda-forge rdkit` |
+| `backend="smirnoff"` | `conda install -c conda-forge openff-toolkit openmmforcefields` |
+
+or as pip extras: `pip install 'forcefill[rdkit]'`, `'forcefill[smirnoff]'`,
+`'forcefill[all]'`. The `environment.yml` above already has both.
+
 ## Quickstart
 
 ```python
@@ -181,7 +208,7 @@ on its own as `minimize_with_forcefield_xml(topology, positions, xml)`, which
 takes the OpenMM knobs (`nonbonded_method`, `max_iterations`, `platform_name`)
 that the pipeline leaves at their defaults.
 
-### Supplying the ligand as drawn (SDF/MOL2)
+### Supplying the ligand as drawn (SDF, MOL2 or SMILES)
 
 Extracting a ligand from a PDB forces antechamber to re-perceive bond orders
 from geometry — a classic source of silently wrong atom types for aromatics
@@ -196,19 +223,123 @@ result = build_forcefield_xml(
 )
 ```
 
-The file must contain the same atoms and bonds (including hydrogens) as the
-residue in the PDB — the generated template is still validated against the
-PDB's bond graph.
+A SMILES works too (needs RDKit). When the residue is also in the structure,
+the coordinates stay as deposited and only the bond orders come from the
+SMILES — the crystal geometry is better than anything embedding produces:
+
+```python
+from forcefill import LigandSpec
+
+result = build_forcefield_xml(
+    "complex.pdb",
+    "extras.xml",
+    ligands={"BEN": LigandSpec(smiles="NC(=[NH2+])c1ccccc1")},
+)
+```
+
+Either way the molecule must be the same one as the residue in the PDB,
+hydrogens included — the generated template is matched against the PDB's bond
+graph. forcefill checks that before running anything expensive; see below.
+
+### Per-ligand settings
+
+`LigandSpec` carries everything about one ligand: where it comes from and how to
+treat it. Anything it does not set falls back to the call-level default, so a
+spec states only what it overrides.
+
+```python
+result = build_forcefield_xml(
+    "complex.pdb",
+    "extras.xml",
+    atom_type="gaff2",  # the default for everything...
+    ligands={
+        "BEN": LigandSpec(file="ben.sdf", backend="smirnoff"),
+        "ATP": LigandSpec(file="atp.mol2", atom_type="gaff", net_charge=-4),
+        "GOL": LigandSpec(smiles="OCC(O)CO", antechamber_args=("-dr", "no")),
+    },
+)
+```
+
+The older `net_charges`, `multiplicities` and `residue_files` mappings still
+work and are folded in. Setting the same thing both ways raises rather than
+silently picking a winner.
+
+### Two backends
+
+| | `backend="gaff"` (default) | `backend="smirnoff"` |
+|---|---|---|
+| Parameters | GAFF/GAFF2 atom types, AM1-BCC charges | OpenFF Sage, SMARTS-matched |
+| Needs | AmberTools on `PATH` | `openff-toolkit`, `openmmforcefields` |
+| Ligand source | PDB residue, SDF, MOL2 or SMILES | **SDF, MOL2 or SMILES only** |
+
+SMIRNOFF assigns parameters by matching SMARTS against the chemical graph, so it
+has no way to work from a PDB residue — a PDB records no bond orders. A ligand on
+that backend needs a `file` or a `smiles`, and says so if it has neither.
+
+Backends can be mixed in one call: forcefill writes one combined XML and OpenMM
+loads it. That works because SMIRNOFF names its atom types by a hash of the
+molecule, so nothing collides — and because the merge keeps the two
+`<PeriodicTorsionForce>` sections apart, since GAFF and SMIRNOFF impropers use
+different `ordering` conventions.
+
+### Ligands without a structure
+
+`build_ligand_xml` is the same pipeline with the ligand as the whole input:
+
+```python
+from forcefill import build_ligand_xml, LigandSpec
+
+build_ligand_xml("benzamidinium.sdf", "ben.xml")  # name from the file: BEN
+build_ligand_xml(["a.sdf", "b.sdf"], "ligs.xml")  # several at once
+build_ligand_xml({"LIG": LigandSpec(smiles="CO")}, "l.xml")  # named explicitly
+```
+
+Residue names not given explicitly come from the file name
+(`benzamidinium.sdf` → `BEN`); a bare string is always a path, never a SMILES.
+Validation still runs — it proves the template covers every atom and that no
+parameter is missing — but with no structure there is no bond graph to match
+against, so the molecule supplies its own topology. If you *do* have the complex,
+`build_forcefield_xml` checks the thing that actually matters.
+
+`examples/parameterize_ligand_standalone.py` runs this through both backends.
+
+### Checks that run before the expensive step
+
+antechamber's AM1-BCC can take an hour on a drug-sized ligand. Three mistakes
+that used to cost that hour — or worse, silently produce wrong numbers — are now
+caught in the first second:
+
+- **Net charge read from the file.** An SDF or MOL2 states its own formal
+  charge, so `net_charge` no longer defaults to a silent 0 for those. A supplied
+  value that contradicts the file raises rather than picking one.
+- **The ligand file must be the residue in the PDB.** A mismatch used to appear
+  only at the end, as an opaque "no template matched". Now it names the
+  difference: `ben.sdf has C7H9N2 (18 atoms), residue BEN has C7H8N2 (17)`.
+- **Geometry sanity.** Coincident atoms, non-finite coordinates or a molecule
+  written with no conformer — the standard causes of the NaN energies that
+  `minimize=True` otherwise only finds at the very end.
+
+`strict=False` downgrades the last two to warnings; these are heuristics and the
+long tail is real.
+
+**One behaviour change to know about.** If you already call
+`build_forcefield_xml(..., residue_files={"BEN": "ben.sdf"})` without
+`net_charges`, forcefill used to send `-nc 0` to antechamber. It now sends the
+charge the SDF states, and logs that it did. For a charged ligand that changes
+the output — to the correct answer. It applies only to ligands supplied as a
+file or SMILES, never to a residue extracted from a PDB, and an explicit
+`net_charge` always wins.
 
 ### Things to get right
 
 - **Explicit hydrogens.** Ligands must contain all hydrogens with reasonable
   geometry; AM1-BCC charges are meaningless otherwise. forcefill warns when a
   ligand has none.
-- **Net charge.** Pass `net_charges={"RES": q}` for every charged ligand.
-  A wrong net charge is the classic source of plausible-but-wrong charges;
-  forcefill warns about `net_charges` keys that match no residue (typos,
-  case mismatches).
+- **Net charge.** Read automatically from a supplied SDF/MOL2/SMILES. For a
+  ligand extracted straight from a PDB there is nothing to read it from, so pass
+  `net_charges={"RES": q}` yourself — a wrong net charge is the classic source
+  of plausible-but-wrong charges. forcefill warns about keys that match no
+  residue (typos, case mismatches).
 - **Connectivity.** Element columns and (for hetero groups) CONECT records
   should be present in the PDB.
 - **One XML at a time.** Load either the combined XML *or* the per-residue
@@ -225,10 +356,12 @@ PDB's bond graph.
 ## Relation to `openmmforcefields`
 
 If you would rather not manage XML files at all,
-[`openmmforcefields.generators.GAFFTemplateGenerator`](https://github.com/openmm/openmmforcefields)
-does the same antechamber job on the fly at `createSystem` time. forcefill is
-for when you want the opposite trade-off: explicit, inspectable, versionable
-XML artifacts, produced once, with the skip-classification above telling you
+[`openmmforcefields`](https://github.com/openmm/openmmforcefields)'
+`GAFFTemplateGenerator` and `SMIRNOFFTemplateGenerator` do the same
+parameterization on the fly at `createSystem` time — and forcefill uses the
+latter for its own `smirnoff` backend. forcefill is for when you want the
+opposite trade-off: explicit, inspectable, versionable XML artifacts, produced
+once, with the skip-classification and the preflight checks above telling you
 which residues need a different treatment entirely.
 
 ## Development
@@ -236,16 +369,19 @@ which residues need a different treatment entirely.
 ```bash
 conda env create -f environment.yml && conda activate forcefill
 pip install -e . --no-deps
-pytest -m "not integration"   # fast hermetic tests, no AmberTools needed
-pytest                        # includes end-to-end antechamber runs
+pytest -m "not integration and not smirnoff"   # fast hermetic tests only
+pytest                                         # everything, including real antechamber and OpenFF
 ```
 
 Style is enforced by ruff (`pip install -e '.[dev]' && pre-commit install`).
 
 ## Roadmap
 
-- A `forcefill` command-line interface.
+- A `forcefill` command-line interface — `build_ligand_xml` is the shape one
+  wants.
 - Caching, so re-runs into the same workdir skip finished antechamber jobs.
+- Covalently bound ligands. Still skipped, and deliberately: a stand-alone
+  treatment of a polymer-linked residue is wrong whichever backend produces it.
 
 ## License
 

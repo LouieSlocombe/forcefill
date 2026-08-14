@@ -20,7 +20,7 @@ pytest.importorskip("parmed")
 from openmm import Vec3, app, unit
 
 import forcefill
-from forcefill import clean_structure, nonstandard_ffxml
+from forcefill import _spec, clean_structure, ligand, nonstandard_ffxml
 from tests.helpers import (
     METHANOL_ATOMS,
     METHANOL_XYZ,
@@ -53,7 +53,7 @@ class StubResidue:
 def test_public_api_resolves():
     for name in forcefill.__all__:
         assert hasattr(forcefill, name), name
-    modules = (nonstandard_ffxml, clean_structure)
+    modules = (nonstandard_ffxml, clean_structure, _spec, ligand)
     # The package re-exports every module's __all__ and nothing else. Ordering
     # is ruff's business (RUF022), so compare contents, not sequence.
     assert set(forcefill.__all__) == {n for m in modules for n in m.__all__}
@@ -545,6 +545,108 @@ def test_orchestration_residue_files_bypass_extraction(fake_ambertools, tmp_path
     (ante,) = fake_ambertools["antechamber"]
     assert ante["input"] == str(sdf)
     assert not (wd / "LIG" / "LIG.pdb").exists()  # extraction skipped
+
+
+def _write_charged_methanol_sdf(path):
+    """Methanol's atoms with an ``M  CHG`` record bolted on.
+
+    Deliberately synthetic: real methoxide would be one hydrogen short, which the
+    composition check would then (correctly) reject. Here the atoms must still
+    match the PDB residue so that the *charge inference* is the only thing under
+    test.
+    """
+    text = Path(write_methanol_sdf(path)).read_text()
+    Path(path).write_text(text.replace("M  END", "M  CHG  1   2  -1\nM  END"))
+    return path
+
+
+def test_orchestration_ligands_spec_replaces_the_legacy_mappings(fake_ambertools, tmp_path):
+    pdb = write_methanol_pdb(tmp_path / "in.pdb")
+    sdf = write_methanol_sdf(tmp_path / "lig.sdf")
+    forcefill.build_forcefield_xml(
+        pdb,
+        tmp_path / "extras.xml",
+        base_forcefield=(),
+        workdir=tmp_path / "wd",
+        ligands={"LIG": forcefill.LigandSpec(file=sdf, multiplicity=3, atom_type="gaff", charge_method="gas")},
+    )
+    (ante,) = fake_ambertools["antechamber"]
+    assert ante["input"] == str(sdf)
+    assert ante["multiplicity"] == 3
+    assert ante["atom_type"] == "gaff"
+    assert ante["charge_method"] == "gas"
+
+
+def test_orchestration_infers_the_net_charge_from_the_ligand_file(fake_ambertools, tmp_path, caplog):
+    # The behaviour change: a supplied file that states a formal charge is no
+    # longer silently treated as neutral.
+    pdb = write_methanol_pdb(tmp_path / "in.pdb")
+    charged = _write_charged_methanol_sdf(tmp_path / "charged.sdf")
+    with caplog.at_level(logging.WARNING):
+        forcefill.build_forcefield_xml(
+            pdb,
+            tmp_path / "extras.xml",
+            base_forcefield=(),
+            workdir=tmp_path / "wd",
+            residue_files={"LIG": charged},
+            validate=False,
+        )
+    assert fake_ambertools["antechamber"][0]["net_charge"] == -1
+    assert "Using net charge -1 for LIG" in caplog.text
+
+
+def test_orchestration_explicit_net_charge_wins_over_a_silent_file(fake_ambertools, tmp_path):
+    # A PDB states no formal charge, so the caller's value is used unchallenged.
+    pdb = write_methanol_pdb(tmp_path / "in.pdb")
+    forcefill.build_forcefield_xml(
+        pdb, tmp_path / "extras.xml", base_forcefield=(), workdir=tmp_path / "wd", net_charges={"LIG": -1}
+    )
+    assert fake_ambertools["antechamber"][0]["net_charge"] == -1
+
+
+def test_orchestration_mismatched_residue_file_fails_before_antechamber(fake_ambertools, tmp_path):
+    # The point of the preflight: this used to surface only after antechamber,
+    # as an opaque OpenMM template-match error.
+    pdb = write_methanol_pdb(tmp_path / "in.pdb")
+    ben = Path(__file__).parent.parent / "examples" / "data" / "benzamidinium.sdf"
+    with pytest.raises(ValueError, match="not the same molecule"):
+        forcefill.build_forcefield_xml(
+            pdb, tmp_path / "extras.xml", base_forcefield=(), workdir=tmp_path / "wd", residue_files={"LIG": ben}
+        )
+    assert fake_ambertools["antechamber"] == []
+
+
+def test_orchestration_strict_false_downgrades_the_mismatch(fake_ambertools, tmp_path, caplog):
+    pdb = write_methanol_pdb(tmp_path / "in.pdb")
+    ben = Path(__file__).parent.parent / "examples" / "data" / "benzamidinium.sdf"
+    with caplog.at_level(logging.WARNING):
+        forcefill.build_forcefield_xml(
+            pdb,
+            tmp_path / "extras.xml",
+            base_forcefield=(),
+            workdir=tmp_path / "wd",
+            residue_files={"LIG": ben},
+            validate=False,
+            strict=False,
+        )
+    assert "not the same molecule" in caplog.text
+    assert len(fake_ambertools["antechamber"]) == 1
+
+
+def test_orchestration_rejects_an_unknown_backend(tmp_path):
+    pdb = write_methanol_pdb(tmp_path / "in.pdb")
+    with pytest.raises(ValueError, match="backend"):
+        forcefill.build_forcefield_xml(pdb, tmp_path / "extras.xml", backend="amoeba")
+
+
+def test_orchestration_smirnoff_without_a_source_is_refused(tmp_path):
+    # Refused before any tool runs: a PDB residue has no bond orders for SMARTS
+    # matching to work on.
+    pdb = write_methanol_pdb(tmp_path / "in.pdb")
+    with pytest.raises(ValueError, match="no ligand source"):
+        forcefill.build_forcefield_xml(
+            pdb, tmp_path / "extras.xml", base_forcefield=(), workdir=tmp_path / "wd", backend="smirnoff"
+        )
 
 
 def test_orchestration_minimize(fake_ambertools, tmp_path):

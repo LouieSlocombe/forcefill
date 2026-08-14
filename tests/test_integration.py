@@ -6,6 +6,7 @@ These run antechamber/parmchk2 for real and are skipped when AmberTools
 
 import math
 import shutil
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import pytest
@@ -15,7 +16,7 @@ pytest.importorskip("parmed")
 
 from openmm import app
 
-from forcefill import build_forcefield_xml
+from forcefill import build_forcefield_xml, build_ligand_xml
 from forcefill.nonstandard_ffxml import locate_gaff_dat
 from tests.helpers import write_methanol_pdb, write_methanol_sdf
 
@@ -103,6 +104,38 @@ def test_minimize_end_to_end(tmp_path):
 
     assert result.full_minimization is not None
     assert math.isfinite(result.full_minimization.final_energy)
+
+
+def test_standalone_ligand_end_to_end(tmp_path):
+    # No PDB anywhere: the ligand file is the whole input, and the mol2
+    # antechamber writes supplies the topology the checks run against.
+    sdf = write_methanol_sdf(tmp_path / "lig.sdf")
+    result = build_ligand_xml(sdf, tmp_path / "lig_ff.xml", workdir=tmp_path / "wd", minimize=True)
+
+    assert result.parameterized == ["LIG"]
+    assert '<Residue name="LIG">' in Path(result.forcefield_xml).read_text()
+    report = result.minimizations["LIG"]
+    assert report.n_atoms == 6
+    assert math.isfinite(report.initial_energy)
+    assert report.energy_change <= 0
+
+    ff = app.ForceField("amber14-all.xml", "amber14/tip3p.xml", result.forcefield_xml)
+    ff.createSystem(app.PDBFile(str(write_methanol_pdb(tmp_path / "in.pdb"))).topology)
+
+
+def test_standalone_ligand_infers_the_net_charge(tmp_path):
+    # Real antechamber this time: the +1 read from the SDF is what -nc receives,
+    # so the charges must sum to +1 rather than to 0.
+    ben = Path(__file__).parent.parent / "examples" / "data" / "benzamidinium.sdf"
+    result = build_ligand_xml(ben, tmp_path / "ben_ff.xml", workdir=tmp_path / "wd")
+
+    assert result.parameterized == ["BEN"]
+    charges = [
+        float(atom.get("charge"))
+        for atom in ET.parse(result.forcefield_xml).getroot().findall("./Residues/Residue/Atom")
+    ]
+    assert len(charges) == 18
+    assert sum(charges) == pytest.approx(1.0, abs=0.01)
 
 
 def test_skipped_residue_still_returns_result(tmp_path):

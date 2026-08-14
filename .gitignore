@@ -165,4 +165,6 @@ cython_debug/
 # examples: downloaded input and generated outputs
 examples/data/3PTB.pdb
 examples/ben_ff.xml
+examples/ben_standalone_*.xml
 examples/wd/
+examples/wd_standalone_*/

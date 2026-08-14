@@ -9,6 +9,18 @@ conda activate forcefill        # needs ambertools on PATH
 python parameterize_ligand.py
 ```
 
+There is a second, shorter script for the case where you have no structure at
+all — just the ligand:
+
+```bash
+python parameterize_ligand_standalone.py
+```
+
+It runs `build_ligand_xml` on the same `data/benzamidinium.sdf` through both
+backends (GAFF2 and OpenFF Sage) and then through both at once, merged into a
+single XML. It never states the net charge: the SDF says `+1` and forcefill
+reads it, which is the difference between that script and the one below.
+
 `parameterize_ligand.py` runs `build_forcefield_xml(minimize=True)` on the
 prepared structure and writes `ben_ff.xml`. The `minimize=True` proves the
 result from inside the library — a finite energy that a minimizer can lower,
@@ -86,7 +98,9 @@ large negative energy after minimization for both.
 |---|---|---|
 | `prepare_trypsin_ben.py` | yes | One-time preparation script (downloads 3PTB, needs pdbfixer + rdkit) |
 | `parameterize_ligand.py` | yes | The actual example: forcefill + OpenMM minimization and dynamics |
+| `parameterize_ligand_standalone.py` | yes | The ligand on its own, no PDB: both backends, then both merged |
 | `data/trypsin_ben_prepared.pdb` | yes | Prepared complex: protonated protein/waters/benzamidinium + bond-less Ca²⁺ |
 | `data/benzamidinium.sdf` | yes | The ligand as drawn: bond orders, +1 charge, 3D hydrogens |
 | `data/3PTB.pdb` | no (downloaded) | The deposited entry, fetched by the prep script |
 | `ben_ff.xml`, `wd/` | no (generated) | Output of the example run |
+| `ben_standalone_*.xml`, `wd_standalone_*/` | no (generated) | Output of the standalone run |
