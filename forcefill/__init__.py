@@ -47,6 +47,9 @@ except _metadata.PackageNotFoundError:  # uninstalled checkout
 # belong (`forcefill.ligand_files.inspect_ligand_file(...)`,
 # `forcefill.charmm.read_charmm_files(...)`), and the top level stays about the
 # pipeline.
+# `clean_structure` is also the name of a *module* here; it stays out of
+# __all__ because at the top level that name reads as build_forcefield_xml's
+# `clean_structure=` switch. Its public names are re-exported above.
 __all__ = [
     "ADDITIVE_RESIDUES",
     "BACKENDS",

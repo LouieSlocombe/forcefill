@@ -4,7 +4,10 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "forcefill"
-version = "0.0.0"
+# Bump on any API-visible change: openmmnqe installs this repo from git HEAD,
+# and this number is the only staleness signal an installed copy carries
+# (forcefill/__init__.py reads it back through the installed metadata).
+version = "0.1.0"
 description = "Parameterize non-standard PDB residues (ligands, cofactors) into OpenMM force-field XML with AmberTools GAFF/AM1-BCC, OpenFF Sage or CHARMM CGenFF"
 readme = "README.md"
 license = "MIT"
