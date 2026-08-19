@@ -1,15 +1,16 @@
 """Tests for the charmm backend: converting CGenFF files into an OpenMM force field.
 
 Hermetic and fast, unlike the gaff tests: the conversion needs no external
-executable and no CHARMM toppar download, because ``charmm36.xml`` ships with
-OpenMM and already carries every CGenFF atom type.
+executable and no CHARMM toppar download - ``charmm36.xml`` ships with OpenMM and
+already carries every CGenFF atom type.
 
-Most of what is checked here is *absence* - that the generated XML does not
-redefine what the base force field already owns. ParmEd writes those definitions
-by default, with zero-valued Lennard-Jones parameters for the types it only knows
-the mass of, and loading them silently replaces the real ones. That failure has
-no error message, so :func:`test_base_lennard_jones_survives_the_conversion` is
-the test that matters most in this file.
+Most of what is checked is *absence*: that the generated XML does not redefine
+what the base force field already owns. ParmEd writes those definitions by
+default, with zero-valued Lennard-Jones parameters for the types it only knows
+the mass of, and loading them silently replaces the real ones - a failure with no
+error message, which makes
+:func:`test_base_lennard_jones_survives_the_conversion` the test that matters
+most here.
 """
 
 import xml.etree.ElementTree as ET
@@ -59,8 +60,8 @@ AMMONIUM = (
 )
 
 #: What the conversion must produce: the residue template alone, naming CGenFF's
-#: own atom types. Written out by hand so the energy comparison below has a
-#: reference that shares no code with the thing it is checking.
+#: own atom types. Hand-written, so the energy comparison below has a reference
+#: sharing no code with the thing it checks.
 REFERENCE_XML = """<ForceField>
  <Residues>
   <Residue name="LIG">
@@ -80,9 +81,9 @@ REFERENCE_XML = """<ForceField>
 </ForceField>"""
 
 #: What ParmEd writes if the pruning is skipped: the same template, plus atom
-#: types and non-bonded entries that redefine charmm36's with epsilon=0. OpenMM
-#: takes the later definition without complaint, which is what makes this the
-#: quiet failure the backend exists to prevent.
+#: types and non-bonded entries redefining charmm36's with epsilon=0. OpenMM
+#: takes the later definition without complaint - the quiet failure the backend
+#: exists to prevent.
 UNPRUNED_XML = REFERENCE_XML.replace(
     "</ForceField>",
     """ <AtomTypes>
@@ -212,10 +213,10 @@ def test_base_lennard_jones_survives_the_conversion(tmp_path):
     """The generated XML must leave charmm36's own Lennard-Jones parameters alone.
 
     ParmEd writes ``sigma=1.0 epsilon=0.0`` for every type whose non-bonded
-    parameters it does not have, and OpenMM lets a later file redefine an atom
-    type without a word - so leaving those in place quietly changes the physics.
-    Two separated copies of the ligand put the intermolecular LJ on the table,
-    where the difference shows up.
+    parameters it lacks, and OpenMM lets a later file redefine an atom type
+    without a word, so leaving those in place quietly changes the physics. Two
+    separated copies of the ligand put the intermolecular LJ on the table, where
+    the difference shows up.
     """
     topology, positions = methanol_pair()
     reference = tmp_path / "reference.xml"
@@ -304,7 +305,7 @@ def test_an_empty_document_is_refused(tmp_path, monkeypatch):
 
     Nothing forcefill can pass it triggers that today - unresolvable atom types
     are caught first - so the writer is stubbed. The guard exists because the
-    failure is silent: a 145-byte ffxml that loads fine and parameterizes nothing.
+    failure is silent: an ffxml that loads fine and parameterizes nothing.
     """
     from parmed.openmm import OpenMMParameterSet
 

@@ -16,14 +16,13 @@ from tests.helpers import DATA
 def fake_ambertools(monkeypatch):
     """Replace the AmberTools layer with fakes that install the committed fixtures.
 
-    Patches :mod:`forcefill.amber` rather than any one caller. The pipeline
+    Patches :mod:`forcefill.amber` rather than any one caller: the pipeline
     reaches AmberTools through the module (``amber.run_antechamber(...)``, never
-    a from-import), so this single patch covers both entry points.
+    a from-import), so one patch covers both entry points.
 
-    ``shutil.which`` is stubbed for the two executables as well, so a code path
-    that quietly went looking for a real one fails here instead of passing on
-    whichever developer machine happens to have AmberTools installed - which is
-    exactly how the fast suite stopped being hermetic before.
+    ``shutil.which`` is stubbed for the two executables too, so a code path that
+    quietly goes looking for a real one fails here rather than passing on
+    whichever machine happens to have AmberTools installed.
     """
     calls = {"antechamber": [], "parmchk2": []}
 

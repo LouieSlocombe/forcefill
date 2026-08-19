@@ -5,16 +5,15 @@ structure. Everything here works on ``openmm.app.Topology`` objects:
 
     * :func:`find_nonstandard_residues` asks OpenMM which residues have no
       template;
-    * :func:`_classify_unmatched` triages those into "parameterize" and "skip
-      and say why", because a stand-alone GAFF treatment is valid for a
-      free-standing hetero molecule and wrong for everything else;
-    * :func:`extract_residue_to_pdb` and the two slicing helpers cut a single
-      residue out of the structure, which is what antechamber and the
-      per-residue checks are given.
+    * :func:`_classify_unmatched` triages those into "parameterize" and "skip,
+      and say why" - a stand-alone GAFF treatment is valid for a free-standing
+      hetero molecule and wrong for everything else;
+    * :func:`extract_residue_to_pdb` and the two slicing helpers cut one residue
+      out, which is what antechamber and the per-residue checks are given.
 
-Residue objects returned from here stay bound to the topology they came from -
-they index into its coordinate array. Never mix them with a topology that was
-rebuilt (by cleaning, say) in the meantime.
+Residue objects from here stay bound to the topology they came from: they index
+into its coordinate array. Never mix them with a topology rebuilt (by cleaning,
+say) in the meantime.
 """
 
 from __future__ import annotations
@@ -47,10 +46,10 @@ def find_nonstandard_residues(
 ) -> list[app.topology.Residue]:
     """Return every residue that *base_forcefield* has no template for.
 
-    This is OpenMM's own definition of "non-standard": a residue whose
-    element/bond graph matches no registered template. Note that standard
-    residues with missing atoms (e.g. a protein without hydrogens) also fail
-    to match; :func:`_classify_unmatched` filters those out separately.
+    OpenMM's own definition of "non-standard": a residue whose element/bond
+    graph matches no registered template. Standard residues with missing atoms
+    (a protein without hydrogens) also fail to match; :func:`_classify_unmatched`
+    filters those out separately.
     """
     forcefield = app.ForceField(*base_forcefield)
     return forcefield.getUnmatchedResidues(topology)
@@ -116,12 +115,10 @@ def _warn_unused_overrides(
 ) -> None:
     """Warn about ligands/net_charges/multiplicities/residue_files keys with no effect.
 
-    A typo'd or case-mismatched key silently leaves the defaults (net
-    charge 0, multiplicity 1, PDB extraction), which yields plausible but
-    wrong AM1-BCC charges - the worst failure mode.
-
-    *removed* names the residues cleaning deleted, so an override aimed at one
-    of them reports the real cause rather than "matches no residue".
+    A typo'd or case-mismatched key silently leaves the defaults (net charge 0,
+    multiplicity 1, PDB extraction), which yields plausible but wrong AM1-BCC
+    charges. *removed* names the residues cleaning deleted, so an override aimed
+    at one of them reports the real cause rather than "matches no residue".
     """
     removed = set(removed)
     for label, mapping in (

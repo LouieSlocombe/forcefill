@@ -25,13 +25,11 @@ def main():
 
     # Step 1: build the force-field XML for everything amber14 cannot match.
     # - net_charges: benzamidinium is protonated (+1) at pH 7; without this,
-    #   AM1-BCC would happily produce plausible-looking charges for the wrong
-    #   ionization state.
+    #   AM1-BCC gives plausible charges for the wrong ionization state.
     # - residue_files: antechamber reads the drawn SDF (explicit bond orders,
-    #   aromatic ring, amidinium) instead of re-perceiving bonds from the
-    #   PDB geometry.
-    # - minimize: not just "does a System build" but "are the numbers in it
-    #   physical" - BEN alone in vacuum, then the whole complex.
+    #   aromatic ring, amidinium) instead of re-perceiving bonds from geometry.
+    # - minimize: checks the numbers are physical, not just that a System
+    #   builds - BEN alone in vacuum, then the whole complex.
     result = build_forcefield_xml(
         PREPARED_PDB,
         HERE / "ben_ff.xml",

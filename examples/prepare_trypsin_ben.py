@@ -1,19 +1,18 @@
 """Prepare the benzamidine-trypsin example structure (PDB 3PTB) from scratch.
 
-This is the one-time preparation that produced the committed files in
-``examples/data/``; run it only if you want to regenerate them. It documents
-every decision the tutorial depends on:
+The one-time preparation that produced the committed files in
+``examples/data/``; run it only to regenerate them. Every step is a decision the
+tutorial depends on:
 
 1. Download 3PTB (bovine trypsin + benzamidine, CC0 data from the RCSB).
 2. PDBFixer adds the missing protein atoms and all protein/water hydrogens at
-   pH 7. PDBFixer cannot protonate the ligand: BEN has no hydrogen template,
-   so it comes out of this step still bare.
-3. RDKit protonates benzamidine: bond orders are assigned from the SMILES
-   template ``NC(=[NH2+])c1ccccc1`` (benzamidinium, the +1 species at pH 7 -
-   its amidine pKa is ~11.6), then hydrogens are added with 3D coordinates.
-   The result is written both into the prepared PDB and as an SDF, so the
-   parameterization example can hand antechamber the drawn bond orders via
-   ``residue_files`` instead of letting it re-perceive them from geometry.
+   pH 7. It cannot protonate the ligand - BEN has no hydrogen template - so
+   benzamidine comes out of this step still bare.
+3. RDKit protonates benzamidine: bond orders from the SMILES template
+   ``NC(=[NH2+])c1ccccc1`` (benzamidinium, the +1 species at pH 7; amidine
+   pKa ~11.6), then hydrogens with 3D coordinates. The result goes both into
+   the prepared PDB and into an SDF, so the parameterization example can hand
+   antechamber the drawn bond orders via ``residue_files``.
 4. The protonated ligand replaces the bare one and the merged structure is
    written with CONECT records.
 

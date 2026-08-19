@@ -5,10 +5,9 @@ Pure data: this module imports nothing from the rest of the package, so both
 without a cycle.
 
 The names are PDB chemical component IDs (the residue-name column, 18-20), not
-element symbols and not atom names. That distinction matters most for ``CA``:
-as a *residue* name it is a calcium ion, as an *atom* name it is the alpha
-carbon of every amino acid. Everything here is matched against residue names
-only.
+element symbols and not atom names. That matters most for ``CA``: as a *residue*
+name it is a calcium ion, as an *atom* name the alpha carbon of every amino acid.
+Everything here is matched against residue names only.
 
 Deliberately absent from :data:`ADDITIVE_RESIDUES`, because removing them by
 default would be wrong more often than right:
@@ -128,11 +127,10 @@ _NUCLEIC_ACIDS = frozenset(
 #: these names are almost always incomplete structures, not new chemistry.
 STANDARD_RESIDUES = _AMINO_ACIDS | _NUCLEIC_ACIDS | WATER_RESIDUES
 
-#: Monatomic salt ions: group-1 cations and group-17 anions, plus the CHARMM
-#: and Amber aliases. These come from the buffer or from neutralizing the
-#: simulation box - they occupy no defined site, coordinate nothing
-#: directionally, and you will re-add them with ``Modeller.addSolvent``
-#: anyway - so the cleaner removes them by default.
+#: Monatomic salt ions: group-1 cations and group-17 anions, plus the CHARMM and
+#: Amber aliases. They come from the buffer or from neutralizing the box, occupy
+#: no defined site, coordinate nothing directionally, and get re-added by
+#: ``Modeller.addSolvent`` anyway - so the cleaner removes them by default.
 BULK_ION_RESIDUES = frozenset(
     [
         "NA",
@@ -162,13 +160,11 @@ BULK_ION_RESIDUES = frozenset(
 )
 
 #: Metals that are frequently structural or catalytic: buried, directionally
-#: coordinated by specific side chains, and often required for the fold or the
-#: chemistry. Trypsin's Ca2+ (PDB 3PTB, residue CA 480) is the worked example.
-#: Kept by default and reported in ``CleaningResult.retained``, because
-#: deleting a needed metal is silent and wrong while keeping an unwanted one is
-#: visible and reversible. The phasing heavy atoms (Hg, Pt, Au, Pb and the
-#: lanthanides) sit here for the same reason, even though stripping them is
-#: usually right.
+#: coordinated, often required for the fold or the chemistry (trypsin's Ca2+,
+#: PDB 3PTB residue CA 480). Kept by default and reported in
+#: ``CleaningResult.retained``, because deleting a needed metal is silent and
+#: wrong while keeping an unwanted one is visible and reversible. The phasing
+#: heavy atoms (Hg, Pt, Au, Pb, lanthanides) sit here for the same reason.
 STRUCTURAL_METAL_RESIDUES = frozenset(
     [
         "CA",
@@ -210,10 +206,9 @@ STRUCTURAL_METAL_RESIDUES = frozenset(
     ]
 )
 
-#: Ion residue name -> element symbol. Every name in
-#: :data:`BULK_ION_RESIDUES` and :data:`STRUCTURAL_METAL_RESIDUES` appears here,
-#: so an ion is never deleted on the strength of its name alone: the residue's
-#: single atom must carry the matching element too.
+#: Ion residue name -> element symbol. Every name in :data:`BULK_ION_RESIDUES`
+#: and :data:`STRUCTURAL_METAL_RESIDUES` appears here, so an ion is never deleted
+#: on its name alone: its single atom must carry the matching element too.
 ION_ELEMENTS = {
     "NA": "Na",
     "NA+": "Na",
@@ -343,8 +338,7 @@ _PRECIPITANTS = frozenset(
 _REDUCTANTS = frozenset(["BME", "DTT", "DTU", "IMD"])
 
 #: Crystallization additives: cryoprotectants, solvents, buffers, precipitants
-#: and reductants. These are artefacts of how the crystal was grown, not of the
-#: biology, and left in place they are exactly what antechamber wastes AM1-BCC
-#: cycles on - with meaningless results, since X-ray additives carry no
-#: hydrogens.
+#: and reductants - artefacts of how the crystal was grown, not of the biology.
+#: Left in place they are what antechamber wastes AM1-BCC cycles on, to no
+#: purpose: X-ray additives carry no hydrogens.
 ADDITIVE_RESIDUES = _CRYOPROTECTANTS | _SOLVENTS | _BUFFERS | _PRECIPITANTS | _REDUCTANTS

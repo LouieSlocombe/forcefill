@@ -1,10 +1,9 @@
 """Prove the generated force field works, by building an ``openmm.System`` from it.
 
-The checks that run *after* parameterization, on the output. (The ones that run
-before it, on the inputs, are :mod:`forcefill.preflight`.) There are two, and
-the difference between them is the point:
+The checks that run *after* parameterization; the input-side ones are
+:mod:`forcefill.preflight`. There are two:
 
-    * :func:`validate_forcefield_xml` builds a System. That proves the generated
+    * :func:`validate_forcefield_xml` builds a System, which proves the generated
       template matches the topology's bond graph and that no parameter is
       missing - and nothing else.
     * :func:`minimize_with_forcefield_xml` also computes an energy and takes a
@@ -12,9 +11,8 @@ the difference between them is the point:
       term all survive a System build and surface later as an exploding
       simulation; this is what catches them.
 
-Both are given the residues one at a time as well as whole, so a template that
-does not match reports itself as that rather than as "something in your
-structure is incomplete".
+Both run per residue as well as on the whole structure, so a template that does
+not match reports itself as that rather than as an incomplete structure.
 """
 
 from __future__ import annotations
@@ -40,9 +38,8 @@ __all__ = [
     "validate_forcefield_xml",
 ]
 
-#: Platform used for the minimization checks. Pinned rather than left to OpenMM,
-#: which picks the fastest available one - forcefill must never take a GPU the
-#: caller wanted for something else.
+#: Platform for the minimization checks. Pinned rather than left to OpenMM's
+#: fastest-available pick, which could take a GPU the caller wanted elsewhere.
 DEFAULT_MINIMIZATION_PLATFORM = "CPU"
 
 #: Minimizer convergence target on the RMS force, in kJ/mol/nm (OpenMM's own default).
@@ -88,11 +85,10 @@ def _validate_parameterized_residues(
 ) -> None:
     """Check that *forcefield* (built from *files*) makes a System for each residue on its own.
 
-    This checks exactly what was produced: that each generated template
-    matches the residue's original bond graph and that no parameters are
-    missing - independently of whether the rest of the input structure is
-    complete. Raises RuntimeError on the first residue that fails. *files*
-    only labels the error message.
+    Proves each generated template matches its residue's bond graph and that no
+    parameter is missing, independently of whether the rest of the structure is
+    complete. Raises on the first residue that fails; *files* only labels the
+    error message.
     """
     files = list(files)
     name = None
@@ -183,11 +179,9 @@ def minimize_with_forcefield_xml(
 ) -> MinimizationResult:
     """Energy-minimize *topology* with ``base_forcefield + xml_file`` and report what happened.
 
-    This is the check :func:`validate_forcefield_xml` cannot make. Building a
-    System only proves the templates match and no parameter is missing; a NaN
-    charge, a zero force constant or a broken angle term all survive it and
-    surface later as an exploding simulation. Computing an energy and taking a
-    few minimizer steps catches them here.
+    The check :func:`validate_forcefield_xml` cannot make: a NaN charge, a zero
+    force constant or a broken angle term all survive a System build and surface
+    later as an exploding simulation.
 
     Raises RuntimeError if the XML will not load, the System will not build, or
     the potential energy is not finite before or after minimizing. The reported
@@ -203,23 +197,23 @@ def minimize_with_forcefield_xml(
         base_forcefield: ffxml files loaded first, e.g. the standard Amber set.
         forcefield: A pre-built ForceField, which must have been constructed
             from ``base_forcefield + xml_file``; skips re-parsing the XML files.
-        max_iterations: Minimizer iteration ceiling. The default is a sanity
-            check, not convergence - pass 0 to run until *tolerance* is met.
+        max_iterations: Minimizer iteration ceiling - a sanity check, not
+            convergence. Pass 0 to run until *tolerance* is met.
         tolerance: Convergence target in kJ/mol/nm, applied to the RMS over all
-            force *components*, so it is not comparable to the per-atom
-            ``max_force`` reported back. Must be positive: OpenMM accepts a
-            negative tolerance and then silently minimizes nothing.
+            force *components*, so not comparable to the per-atom ``max_force``
+            reported back. Must be positive: OpenMM accepts a negative tolerance
+            and then silently minimizes nothing.
         nonbonded_method: ``createSystem`` nonbonded method. The default,
             ``app.NoCutoff``, is exact but O(N^2); pass ``app.PME`` for a
             solvated periodic box.
         constraints: ``createSystem`` constraints. Deliberately ``None`` rather
-            than ``app.HBonds``: constraining bonds is exactly what would hide
-            a bad bond parameter.
+            than ``app.HBonds``: constraining bonds would hide a bad bond
+            parameter.
         rigid_water: Deliberately False, unlike OpenMM's default. With
             constraints present ``getForces`` returns the unconstrained forces,
-            which makes the reported ``max_force`` a meaningless residual.
-        platform_name: OpenMM platform. Pinned to CPU by default so this check
-            cannot take a GPU the caller wanted for something else.
+            making the reported ``max_force`` a meaningless residual.
+        platform_name: OpenMM platform, pinned to CPU so this check cannot take
+            a GPU the caller wanted for something else.
 
     Returns:
         MinimizationResult

@@ -14,10 +14,10 @@ authors = [
 ]
 requires-python = ">= 3.10"
 dependencies = [
-    # All required at import time. conda-forge is the recommended install route
-    # for the full stack: the AmberTools executables (antechamber, parmchk2)
-    # that do the gaff backend's actual work are conda-only, and rdkit and the
-    # OpenFF packages are far better behaved from conda-forge than from PyPI.
+    # All required at import time. conda-forge is the recommended install route:
+    # the AmberTools executables the gaff backend calls (antechamber, parmchk2)
+    # are conda-only, and rdkit and the OpenFF packages behave far better from
+    # conda-forge than from PyPI.
     "openmm >= 7.6",
     "parmed >= 3.4",
     # SMILES input, and the file readers behind the preflight checks.
@@ -36,9 +36,9 @@ classifiers = [
 
 [project.optional-dependencies]
 test = ["pytest", "pytest-cov"]
-# Pinned, not floating: ruff's formatter output can shift between releases, so the
-# version here must match .pre-commit-config.yaml and .github/workflows/ci.yml or
-# a locally-clean tree can still fail the CI format gate.
+# Pinned, not floating: ruff's formatter output shifts between releases, so this
+# must match .pre-commit-config.yaml and .github/workflows/ci.yml or a locally
+# clean tree can still fail the CI format gate.
 dev = ["ruff == 0.16.2", "pre-commit"]
 
 [project.urls]
@@ -62,9 +62,9 @@ markers = [
     "smirnoff: runs real OpenFF parameterization (slow); deselect with -m 'not smirnoff'",
 ]
 
-# Coverage is measured with `pytest --cov`; the config lives here so local runs
-# and CI report the same numbers. The tests live outside the package, so they
-# fall outside `source` and need no explicit omit.
+# Coverage is measured with `pytest --cov`; configured here so local runs and CI
+# report the same numbers. The tests live outside the package, so they fall
+# outside `source` and need no explicit omit.
 [tool.coverage.run]
 source = ["forcefill"]
 
@@ -73,17 +73,16 @@ exclude_also = [
     "if TYPE_CHECKING:",
 ]
 
-# Style is machine-enforced end to end: `ruff format` owns layout, `ruff check` owns
-# what the formatter cannot express. Both gate CI (.github/workflows/ci.yml) and run
-# as pre-commit hooks (.pre-commit-config.yaml); the ruff version is pinned in all
-# three places and in the `dev` extra above — keep them in step.
+# `ruff format` owns layout, `ruff check` what the formatter cannot express. Both
+# gate CI (.github/workflows/ci.yml) and run as pre-commit hooks
+# (.pre-commit-config.yaml); the version is pinned there, here and in the `dev`
+# extra above — keep the three in step.
 [tool.ruff]
 line-length = 120
 target-version = "py310"
 
-# These are ruff's current defaults, so pinning them changes nothing today. The
-# section exists so that a future ruff release which changes a default cannot
-# silently reformat the whole tree.
+# ruff's current defaults, pinned so that a future release which changes one
+# cannot silently reformat the whole tree.
 [tool.ruff.format]
 quote-style = "double"
 indent-style = "space"
@@ -95,11 +94,11 @@ docstring-code-format = true
 select = [
     "F", "E", "W", "I", "N", "UP", "B", "A", "C4", "PIE", "SIM", "RUF", "FURB",
     "PLE", "PLW", "BLE", "T20", "G", "LOG",
-    # Docstring shape, Google convention (configured below). Docstring *presence*
-    # is deliberately not checked here — see the D1xx ignores.
+    # Docstring shape, Google convention (configured below); *presence* is not
+    # checked — see the D1xx ignores.
     "D",
     # Consistency guards: each was at zero violations when adopted, so they cost
-    # nothing to keep and stop the styles they forbid from creeping back in.
+    # nothing and stop the styles they forbid creeping back in.
     "ICN", "TID", "PYI", "RSE", "FA", "PGH", "DTZ", "EXE", "INT", "ISC", "ERA",
     "PLR2044",
     # Redundancy the formatter cannot see: `else` after `return`/`raise`, assign-
@@ -107,9 +106,9 @@ select = [
     "RET", "PERF", "PLR1714", "PLR5501", "PLR1711", "PLC1802",
 ]
 ignore = [
-    # Docstring presence is not enforced wholesale: the public API is fully
-    # documented already; requiring docstrings on every test function and tiny
-    # private helper would add noise, not information.
+    # Docstring presence is not enforced: the public API is documented already,
+    # and requiring one on every test function and tiny private helper would add
+    # noise, not information.
     "D100", "D101", "D102", "D103", "D104", "D105", "D106", "D107",
     # On ruff's own formatter-incompatible list. Implicit concatenation across
     # lines is how the long error-message templates stay under line-length.

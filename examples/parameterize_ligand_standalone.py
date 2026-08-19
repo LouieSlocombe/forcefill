@@ -1,27 +1,25 @@
 """Parameterize benzamidinium on its own - no protein, no PDB - through both backends.
 
 The companion to parameterize_ligand.py, which needs the prepared complex. Here
-the ligand file is the entire input, which is the common case when you are
-building a ligand library or preparing a molecule before you have a structure to
-put it in.
+the ligand file is the whole input: the common case when building a ligand
+library, or preparing a molecule before you have a structure to put it in.
 
 Two things worth watching in the output:
 
   * the net charge is never stated. data/benzamidinium.sdf carries an M CHG
-    record saying +1, and forcefill reads it - passing net_charges={"BEN": 1} by
-    hand, as parameterize_ligand.py does, is now belt and braces rather than the
-    difference between right and wrong answers.
-  * the same molecule goes through GAFF2 and through OpenFF Sage, and the two
-    disagree about its energy. That is expected: they are different force
-    fields. What matters is that each is internally consistent, which is what
-    minimize=True checks.
+    record saying +1 and forcefill reads it, so passing net_charges={"BEN": 1}
+    by hand - as parameterize_ligand.py does - is belt and braces rather than
+    the difference between a right and a wrong answer.
+  * the same molecule goes through GAFF2 and OpenFF Sage, and the two disagree
+    about its energy. Expected: they are different force fields. What matters is
+    that each is internally consistent, which is what minimize=True checks.
 
 Run from this directory:
 
     python parameterize_ligand_standalone.py
 
 Requires AmberTools on PATH for the GAFF half; the OpenFF stack the SMIRNOFF
-half needs is an ordinary forcefill dependency, so it is already there.
+half needs is an ordinary forcefill dependency.
 """
 
 import logging

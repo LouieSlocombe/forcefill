@@ -1,42 +1,35 @@
 """Identify the non-standard residues in a structure and build a force field for them.
 
-The entry point that starts from a PDB. :func:`~forcefill.build_ligand_xml`
-starts from the ligands themselves; the pipeline between the two is shared, and
+The entry point that starts from a PDB; :func:`~forcefill.build_ligand_xml`
+starts from the ligands themselves. The pipeline between the two is shared and
 lives in :mod:`forcefill._pipeline`.
 
 Pipeline:
     1. :func:`~forcefill.find_nonstandard_residues` asks the base force field
        which residues it cannot match.
     2. Those are classified, and only chemistry a stand-alone GAFF treatment is
-       actually *valid* for is parameterized:
+       *valid* for is parameterized:
 
-       * standard residues that are merely missing atoms   -> reported, skipped
-         (repair the structure with PDBFixer / ``Modeller.addHydrogens`` instead)
-       * monatomic species (ions)                          -> reported, skipped
-         (load an ion parameter file; never run antechamber on a bare ion)
-       * residues covalently bonded to neighbours          -> reported, skipped
-         (stand-alone GAFF is wrong for polymer-linked residues such as modified
-         amino acids; those need capping + a consistent charge derivation, e.g.
-         with pyRED or ffparam-style workflows)
+       * standard residues merely missing atoms -> skipped (repair the structure
+         with PDBFixer / ``Modeller.addHydrogens`` instead)
+       * monatomic species (ions) -> skipped (load an ion parameter file)
+       * residues covalently bonded to neighbours -> skipped (a polymer-linked
+         residue needs capping and a consistent charge derivation, pyRED-style)
        * free-standing hetero molecules (ligands, cofactors) -> parameterized
 
-    3. Everything checkable is checked before anything expensive runs -
-       see :mod:`forcefill.preflight`.
-    4. Each unique residue goes through its backend: AmberTools for ``gaff``
-       (:mod:`forcefill.amber`), openff-toolkit for ``smirnoff``
-       (:mod:`forcefill.smirnoff`).
-    5. The per-residue results are combined into one XML.
+    3. Everything checkable is checked before anything expensive runs; see
+       :mod:`forcefill.preflight`.
+    4. Each unique residue goes through its backend: :mod:`forcefill.amber`,
+       :mod:`forcefill.smirnoff` or :mod:`forcefill.charmm`.
+    5. The per-residue XMLs are combined into one.
     6. That XML is validated, and optionally minimized, by
        :mod:`forcefill.checks`.
 
 Requirements:
-    * ``openmm``, ``parmed``, ``rdkit``, ``openff-toolkit`` and
-      ``openmmforcefields`` at import time
-    * AmberTools (``antechamber``, ``parmchk2``) on ``PATH`` for the gaff
-      backend, e.g. ``conda install -c conda-forge ambertools``
-
-    conda-forge is the recommended route for the whole stack; see
-    ``environment.yml``.
+    ``openmm``, ``parmed``, ``rdkit``, ``openff-toolkit`` and
+    ``openmmforcefields`` at import time, plus AmberTools (``antechamber``,
+    ``parmchk2``) on ``PATH`` for the gaff backend. conda-forge is the
+    recommended route for the whole stack; see ``environment.yml``.
 
 Example:
     >>> from forcefill import build_forcefield_xml
@@ -50,17 +43,14 @@ Example:
         system = ff.createSystem(pdb.topology, ...)
 
 Notes:
-    * Crystal structures carry water, buffer ions and crystallization
-      additives, and a free-standing additive such as glycerol looks exactly
-      like a ligand to step 2 - so it gets parameterized. Strip them first with
-      :func:`forcefill.clean_pdb`, or pass ``clean_structure=True`` here to do
-      it in memory.
-    * Ligands must contain **all explicit hydrogens** with reasonable geometry;
+    * A crystallization additive such as glycerol is a free-standing hetero
+      molecule too, so step 2 parameterizes it. Strip those first with
+      :func:`forcefill.clean_pdb`, or pass ``clean_structure=True`` to do it in
+      memory.
+    * Ligands must carry **all explicit hydrogens** with reasonable geometry;
       AM1-BCC charges are meaningless otherwise.
-    * Load either the combined XML *or* the per-residue XMLs with a ForceField,
-      never both at once (duplicate GAFF atom-type definitions would collide).
-    * If you would rather not manage XML files at all, the same job can be done
-      at runtime with ``openmmforcefields.generators.GAFFTemplateGenerator``.
+    * Load either the combined XML *or* the per-residue XMLs, never both -
+      duplicate GAFF atom-type definitions would collide.
 """
 
 from __future__ import annotations
@@ -131,49 +121,37 @@ def build_forcefield_xml(
             element columns and (for hetero groups) CONECT records should be
             present.
         output_xml: Where to write the combined force-field XML.
-        clean_structure: If True, remove crystallographic water, bulk
-            counter-ions and crystallization additives *in memory* before
-            anything else looks at the structure, using
-            :func:`~forcefill.clean_topology` with its defaults - so structural
-            metals are kept. Off by default: it deletes atoms, and a pipeline
-            should never do that unasked. What went is reported in
-            ``cleaning``. Note that everything downstream then describes the
-            *cleaned* system rather than the file on disk: the full-structure
-            ``validate`` / ``minimize`` checks, and therefore
-            ``full_minimization.n_atoms``, refer to the stripped topology. For
-            anything beyond the defaults - keeping a particular additive,
-            stripping a metal - call :func:`~forcefill.clean_pdb` yourself and
-            pass the cleaned file in.
+        clean_structure: Remove crystallographic water, bulk counter-ions and
+            crystallization additives *in memory* before anything else looks at
+            the structure, via :func:`~forcefill.clean_topology` with its
+            defaults - so structural metals are kept. Off by default because it
+            deletes atoms; what went is reported in ``cleaning``. Everything
+            downstream then describes the *cleaned* system, including
+            ``full_minimization.n_atoms``. For anything beyond the defaults,
+            call :func:`~forcefill.clean_pdb` yourself and pass the result in.
         base_forcefield: ffxml files defining what counts as "standard".
-        ligands: ``{residue_name: LigandSpec}`` - per-ligand settings. A spec
-            says where the ligand comes from (``file``, ``smiles``) and how to
-            treat it (``net_charge``, ``backend``, ``atom_type``, ...), and
-            leaves everything it does not set to the call-level defaults below.
-            This is the general form of *net_charges* / *multiplicities* /
+        ligands: ``{residue_name: LigandSpec}`` - per-ligand settings, each
+            inheriting the call-level defaults below for whatever it does not
+            set. The general form of *net_charges* / *multiplicities* /
             *residue_files*, which still work and are folded in; setting the
             same thing both ways raises.
-        net_charges: ``{residue_name: net_charge}``. When a ligand is supplied
-            as a file or SMILES its formal charge is read from there, so this is
-            only needed for a residue extracted from the PDB - or to override
-            what the file says, which raises if the two disagree.
+        net_charges: ``{residue_name: net_charge}``. A ligand supplied as a file
+            or SMILES states its own formal charge, so this is only needed for a
+            residue extracted from the PDB - or to override the file, which
+            raises if the two disagree.
         multiplicities: ``{residue_name: spin_multiplicity}``; defaults to 1.
         residue_files: ``{residue_name: ligand_file}`` - parameterize these
             residues from the given SDF/MOL2 (or other antechamber-readable)
-            file instead of extracting them from the PDB. A file with explicit
-            bond orders and protonation as drawn avoids antechamber having to
-            re-perceive them from PDB geometry, a classic source of silently
-            wrong atom types. The file must contain the *same* atoms and bonds
-            (including hydrogens) as the residue in the PDB; *strict* checks
-            that up front.
-        backend: ``"gaff"`` (default) for GAFF/GAFF2 through antechamber,
-            ``"smirnoff"`` for OpenFF through openff-toolkit, or ``"charmm"`` to
-            convert CGenFF parameters you already have. SMIRNOFF assigns
-            parameters from the chemical graph, so every ligand on it needs a
-            ``file`` or ``smiles`` - a PDB residue carries no bond orders; the
-            charmm backend needs ``charmm_files`` for the same reason. Set it
-            per ligand with ``LigandSpec(backend=...)`` to mix gaff and
-            smirnoff. CHARMM cannot be mixed with either: it scales 1-4
-            interactions differently, and needs *base_forcefield* set to
+            file instead of extracting them from the PDB, so antechamber need
+            not re-perceive bond orders from geometry. The file must hold the
+            *same* atoms and bonds (hydrogens included) as the PDB residue;
+            *strict* checks that up front.
+        backend: ``"gaff"`` (default), ``"smirnoff"`` or ``"charmm"``. SMIRNOFF
+            assigns parameters from the chemical graph, so its ligands need a
+            ``file`` or ``smiles``; charmm needs ``charmm_files``. Set it per
+            ligand with ``LigandSpec(backend=...)`` to mix gaff and smirnoff.
+            CHARMM mixes with neither - it scales 1-4 interactions differently -
+            and needs *base_forcefield* set to
             :data:`~forcefill.CHARMM_BASE_FORCEFIELD`.
         atom_type: ``"gaff2"`` (default) or ``"gaff"``. gaff backend only.
         charge_method: antechamber charge method, default ``"bcc"`` (AM1-BCC).
@@ -183,44 +161,36 @@ def build_forcefield_xml(
             ``forcefill.smirnoff.installed_smirnoff_forcefields()``.
         charmm_files: CHARMM topology/parameter files shared by every charmm
             ligand, e.g. an extra ``par_all36_cgenff.prm``. Per-ligand stream
-            files go in ``LigandSpec(charmm_files=...)`` and are appended after
-            these. charmm backend only.
-        workdir: Directory for intermediate files (per-residue PDB, mol2,
-            frcmod, per-residue XML). A fresh temporary directory is created
-            if not given; its path is reported in the result and it is kept
-            unless ``cleanup=True``.
-        cleanup: If True, delete the working directory after a *successful*
-            build. The per-residue XMLs live there, so ``residue_xmls`` comes
-            back empty and ``workdir`` is None; only the combined XML
-            survives. On failure the directory is always kept so ``sqm.out``
-            and the intermediates can be inspected. Refuses to run if
-            *output_xml* itself resolves inside the working directory.
-        validate: If True (default), verify that ``base_forcefield +
-            output_xml`` can build a System for each parameterized residue on
-            its own. When no residues were skipped, additionally verify the
-            full input topology (the cleaned one, with *clean_structure*);
-            with skipped residues present that check would always fail (they
-            still have no template), so it is logged and omitted instead.
-        minimize: If True, additionally energy-minimize each parameterized
-            residue in vacuum (and the full input topology, under the same
-            no-residues-skipped condition as *validate*), reported back in
-            ``minimizations`` and ``full_minimization``. This catches
-            unphysical parameters - a NaN charge, a zero force constant -
-            which building a System alone cannot. Off by default because it
-            costs an energy evaluation per residue. It subsumes *validate*:
-            minimizing implies building the System, just with a less specific
-            error message when a template does not match.
-        strict: If True (default), a supplied ligand file that is not the same
-            molecule as the residue in the PDB, or a ligand with atoms on top of
-            each other, is an error - raised before antechamber runs rather than
-            discovered an hour later. Set False to downgrade both to warnings;
-            these are heuristics and the long tail is real.
-        antechamber_args: Extra raw arguments appended to the antechamber
-            command line (e.g. ``("-dr", "no")`` to relax acdoctor structure
-            checks). Per-ligand additions go in ``LigandSpec.antechamber_args``.
-        timeout: Per-invocation ceiling in seconds for each antechamber /
-            parmchk2 run (None disables it). Default one hour. Does not apply to
-            the smirnoff backend, which runs in-process.
+            files go in ``LigandSpec(charmm_files=...)``, appended after these.
+        workdir: Directory for intermediate files (per-residue PDB, mol2, frcmod
+            and XML). A fresh temporary directory is created if not given, and
+            kept unless ``cleanup=True``.
+        cleanup: Delete the working directory after a *successful* build. The
+            per-residue XMLs live there, so ``residue_xmls`` comes back empty
+            and only the combined XML survives; on failure the directory is
+            always kept for the post-mortem. Refuses to run if *output_xml*
+            resolves inside it.
+        validate: Verify that ``base_forcefield + output_xml`` builds a System
+            for each parameterized residue on its own (default). When nothing
+            was skipped, the full input topology is checked too; with skipped
+            residues that check would always fail, so it is logged and omitted.
+        minimize: Also energy-minimize each parameterized residue in vacuum (and
+            the full topology, under the same condition as *validate*), reported
+            in ``minimizations`` and ``full_minimization``. Catches unphysical
+            parameters - a NaN charge, a zero force constant - that a System
+            build accepts. Off by default: it costs an energy evaluation per
+            residue. Subsumes *validate*, with a less specific error message
+            when a template does not match.
+        strict: Raise (default) rather than warn when a supplied ligand file is
+            not the same molecule as the PDB residue, or a ligand has atoms on
+            top of each other - before antechamber runs rather than an hour
+            later. These are heuristics and the long tail is real.
+        antechamber_args: Extra arguments appended to the antechamber command
+            line (e.g. ``("-dr", "no")`` to relax the acdoctor checks).
+            Per-ligand additions go in ``LigandSpec.antechamber_args``.
+        timeout: Per-invocation ceiling in seconds for antechamber / parmchk2
+            (None disables it). Default one hour. Does not apply to the smirnoff
+            backend, which runs in-process.
 
     Returns:
         ParameterizationResult
@@ -238,10 +208,9 @@ def build_forcefield_xml(
 
     cleaning: CleaningResult | None = None
     if clean_structure:
-        # Both halves rebound together, before anything holds a Residue
-        # reference: _classify_unmatched stores live Residue objects and
-        # _residue_positions indexes positions by atom.index, so a topology
-        # swapped in later would silently address the wrong coordinates.
+        # Rebind both halves together, before anything holds a Residue: those
+        # index into the topology's coordinate array, so swapping the topology
+        # in later would silently address the wrong coordinates.
         topology, positions, cleaning = clean_topology(topology, positions)
         if cleaning.n_atoms_removed:
             log.warning(
@@ -300,9 +269,8 @@ def build_forcefield_xml(
     minimizations: dict[str, MinimizationResult] = {}
     full_minimization: MinimizationResult | None = None
     with _pipeline.working_directory(workdir, output_xml, prefix="nonstandard_ff_", cleanup=cleanup) as wd:
-        # Everything checkable is checked before the first expensive call, so a
-        # mistake in the last ligand does not cost the parameterization of the
-        # first - antechamber's AM1-BCC can take an hour per ligand.
+        # Check everything before the first expensive call: AM1-BCC can take an
+        # hour per ligand, so a mistake in the last must not cost the first.
         specs = preflight_specs(specs, to_param, positions, wd, strict=strict, base_forcefield=base_forcefield)
 
         artifacts = _pipeline.parameterize_all(
@@ -317,8 +285,8 @@ def build_forcefield_xml(
             # Parse the (large) base force field + new XML once; every check uses it.
             files = [*base_forcefield, combined]
             forcefield = app.ForceField(*files)
-            # Validate first: a template mismatch then reports itself as a bond-graph
-            # problem rather than as the minimizer failing to build a System.
+            # Validate first: a template mismatch then reports itself as such,
+            # not as the minimizer failing to build a System.
             if validate:
                 _validate_parameterized_residues(to_param, forcefield, files)
             if minimize:

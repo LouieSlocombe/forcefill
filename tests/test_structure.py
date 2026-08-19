@@ -319,7 +319,7 @@ def test_everything_skipped_raises(tmp_path):
 def test_clean_structure_removes_an_additive_before_parameterizing(fake_ambertools, tmp_path):
     # A free-standing glycerol is indistinguishable from a ligand, so without
     # cleaning it goes to antechamber - minutes of AM1-BCC on a cryoprotectant,
-    # with meaningless charges because X-ray additives carry no hydrogens.
+    # for meaningless charges, since X-ray additives carry no hydrogens.
     pdb = write_ligand_and_glycerol_pdb(tmp_path / "in.pdb")
 
     # validate=False: the fake antechamber returns methanol for every residue,

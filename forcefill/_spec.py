@@ -1,8 +1,8 @@
 """Per-ligand settings: what to parameterize a residue from, and how.
 
-One :class:`LigandSpec` describes one ligand. Every knob except *multiplicity*
-defaults to ``None``, meaning "inherit the call-level default", so a spec states
-only what it overrides::
+One :class:`LigandSpec` describes one ligand. Every field except *multiplicity*
+defaults to ``None`` - inherit the call-level default - so a spec states only
+what it overrides::
 
     build_forcefield_xml(
         "complex.pdb",
@@ -10,16 +10,13 @@ only what it overrides::
         ligands={"BEN": LigandSpec(file="ben.sdf", net_charge=1, atom_type="gaff")},
     )
 
-The older ``net_charges`` / ``multiplicities`` / ``residue_files`` mappings are
-still accepted and are folded into specs by :func:`resolve_specs`. A residue
-named by both a legacy mapping and a spec raises rather than silently picking a
-winner: a disagreement there is exactly the kind of thing that produces
-plausible-but-wrong charges.
+The legacy ``net_charges`` / ``multiplicities`` / ``residue_files`` mappings are
+folded into specs by :func:`resolve_specs`; a residue named by both raises rather
+than silently picking a winner.
 
-This module is pure data and validation. Like :mod:`forcefill._residue_names` it
-imports nothing else from the package, so every other module can depend on it -
-which is why the shared :data:`PathLike` alias and the settings more than one
-module needs live here too.
+Pure data and validation, importing nothing else from the package so every other
+module can depend on it - which is why the shared :data:`PathLike` alias and the
+cross-module settings live here too.
 """
 
 from __future__ import annotations
@@ -45,12 +42,10 @@ PathLike = str | os.PathLike
 DEFAULT_BASE_FORCEFIELD = ("amber14-all.xml", "amber14/tip3p.xml")
 
 #: The CHARMM equivalent, for ``backend="charmm"``. Not interchangeable with
-#: :data:`DEFAULT_BASE_FORCEFIELD`: Amber scales 1-4 interactions by
-#: 0.8333/0.5 and CHARMM by 1.0/1.0, and OpenMM refuses to load two force
-#: fields that disagree ("Found multiple NonbondedForce tags with different 1-4
-#: scales"). ``charmm36.xml`` already carries every CGenFF atom type and
-#: parameter, which is what lets the charmm backend emit a residue template
-#: alone - see :mod:`forcefill.charmm`.
+#: :data:`DEFAULT_BASE_FORCEFIELD`: Amber scales 1-4 interactions by 0.8333/0.5
+#: and CHARMM by 1.0/1.0, and OpenMM will not load force fields that disagree.
+#: ``charmm36.xml`` already carries every CGenFF atom type, which is what lets
+#: the charmm backend emit a residue template alone - see :mod:`forcefill.charmm`.
 CHARMM_BASE_FORCEFIELD = ("charmm36.xml", "charmm36/water.xml")
 
 #: Parameterization backends. ``"gaff"`` is antechamber + parmchk2 + ParmEd;
@@ -59,21 +54,20 @@ CHARMM_BASE_FORCEFIELD = ("charmm36.xml", "charmm36/water.xml")
 BACKENDS = ("gaff", "smirnoff", "charmm")
 
 #: File suffixes ``parmed.charmm.CharmmParameterSet`` dispatches on. It decides
-#: what a file *is* from its name alone, so a ``par_all36_cgenff.prm.txt``
-#: raises "Unrecognized file type" no matter what is inside it.
+#: what a file *is* from its name alone, so ``par_all36_cgenff.prm.txt`` raises
+#: "Unrecognized file type" no matter what is inside it.
 CHARMM_FILE_SUFFIXES = (".str", ".rtf", ".top", ".prm", ".par", ".inp")
 
 #: SMIRNOFF release used when a spec does not name one. Pinned rather than
-#: "latest": the force field version is part of the science, and a silent
-#: upgrade underneath a saved XML would be invisible in the output.
+#: "latest": the version is part of the science, and a silent upgrade underneath
+#: a saved XML would be invisible in the output.
 DEFAULT_SMIRNOFF_FORCEFIELD = "openff-2.2.1"
 
 #: Valid ``atom_type`` values: each names a GAFF parameter database ({atom_type}.dat).
 ATOM_TYPES = ("gaff", "gaff2")
 
-#: Charge methods antechamber accepts (see ``antechamber -L``). The list is
-#: AmberTools-version-dependent (abcg2 needs >= 23); extend it rather than
-#: bypassing the check if your antechamber knows more.
+#: Charge methods antechamber accepts (``antechamber -L``). Version-dependent
+#: (abcg2 needs AmberTools >= 23); extend it if your antechamber knows more.
 CHARGE_METHODS = ("bcc", "abcg2", "gas", "mul", "cm1", "cm2", "esp", "resp", "rc", "wc", "dc")
 
 
@@ -86,12 +80,9 @@ def check_choice(value: str, valid: Sequence[str], label: str) -> None:
 def check_charmm_suffix(path: PathLike) -> None:
     """Raise unless *path* has a name ParmEd recognizes as a CHARMM file.
 
-    ParmEd decides whether a file is a topology, a parameter set or a stream
-    file from its **name**, so a correctly-formatted parameter file saved as
-    ``par_all36_cgenff.prm.txt`` fails with a bare "Unrecognized file type".
-    Saying so here names the fix. ``.inp`` is the exception it makes for the old
-    CHARMM script convention, where the kind is read from the rest of the name
-    instead, and this mirrors that.
+    ParmEd reads the file kind from the **name**, so a well-formed parameter file
+    saved as ``par_all36_cgenff.prm.txt`` fails with a bare "Unrecognized file
+    type". ``.inp`` is its exception: the kind comes from the rest of the name.
     """
     name = os.path.basename(str(path)).lower()
     if name.endswith(".inp") and ("par" in name or "top" in name):
@@ -117,34 +108,28 @@ class LigandSpec:
 
     Args:
         file: Ligand file with explicit bonds (SDF/MOL2, or anything antechamber
-            reads) to use instead of extracting the residue from the PDB. Bond
-            orders and protonation as drawn spare antechamber having to
-            re-perceive them from geometry, a classic source of silently wrong
-            atom types. Mutually exclusive with *smiles*, and unused by the
-            ``charmm`` backend, which reads its chemistry from *charmm_files*.
-        smiles: SMILES for the ligand, converted to a 3D SDF before use. When
-            the residue also exists in the input PDB, the PDB's coordinates are
-            kept and only the bond orders come from the SMILES.
-        net_charge: Formal net charge. ``None`` means "read it from *file* or
-            *smiles*", falling back to 0 for a residue extracted from a PDB.
-            Getting this right is essential for sensible AM1-BCC charges.
+            reads), used instead of extracting the residue from the PDB. Drawn
+            bond orders spare antechamber re-perceiving them from geometry, a
+            classic source of silently wrong atom types. Mutually exclusive with
+            *smiles*; unused by the ``charmm`` backend.
+        smiles: SMILES for the ligand, converted to a 3D SDF before use. When the
+            residue is also in the input PDB, its coordinates are kept and only
+            the bond orders come from the SMILES.
+        net_charge: Formal net charge. ``None`` reads it from *file* or *smiles*,
+            falling back to 0 for a residue extracted from a PDB. Essential for
+            sensible AM1-BCC charges.
         multiplicity: Spin multiplicity passed to antechamber.
-        atom_type: ``"gaff2"`` or ``"gaff"``; ``None`` inherits the call-level
-            default. Ignored by the ``smirnoff`` backend.
-        charge_method: antechamber charge method; ``None`` inherits. Ignored by
-            the ``smirnoff`` backend.
-        antechamber_args: Extra raw antechamber arguments for this ligand,
-            appended after the call-level ones.
+        atom_type: ``"gaff2"`` or ``"gaff"``; ``None`` inherits. gaff only.
+        charge_method: antechamber charge method; ``None`` inherits. gaff only.
+        antechamber_args: Extra antechamber arguments for this ligand, appended
+            after the call-level ones.
         backend: ``"gaff"``, ``"smirnoff"`` or ``"charmm"``; ``None`` inherits.
-            The ``smirnoff`` backend needs real bond orders, so a ligand using it
-            must set *file* or *smiles*; the ``charmm`` backend takes its
-            chemistry from *charmm_files* instead.
+            smirnoff needs *file* or *smiles*, charmm needs *charmm_files*.
         forcefield: SMIRNOFF release for the ``smirnoff`` backend, e.g.
-            ``"openff-2.2.1"``; ``None`` inherits. Ignored by ``gaff``.
-        charmm_files: CHARMM topology/parameter files for the ``charmm``
-            backend - typically the single ``.str`` stream file the CGenFF
-            program or ParamChem produced for this ligand, plus any extra
-            ``.rtf``/``.prm`` it needs. Appended after the call-level ones.
+            ``"openff-2.2.1"``; ``None`` inherits.
+        charmm_files: CHARMM topology/parameter files for the ``charmm`` backend
+            - typically one ``.str`` from ParamChem or the cgenff program, plus
+            any extra ``.rtf``/``.prm``. Appended after the call-level ones.
     """
 
     file: PathLike | None = None
@@ -184,9 +169,9 @@ class LigandSpec:
 class ResolvedSpec:
     """A :class:`LigandSpec` with every default filled in.
 
-    What the pipeline actually consumes: no ``None`` to re-interpret at each
-    step, and ``net_charge`` still optional only because inferring it needs the
-    ligand file, which is read later.
+    What the pipeline consumes: no ``None`` to re-interpret at each step.
+    ``net_charge`` stays optional only because inferring it needs the ligand
+    file, which is read later.
     """
 
     name: str
@@ -280,9 +265,9 @@ def resolve_specs(
     """Build one :class:`ResolvedSpec` per residue in ``defaults.names``.
 
     Merges *ligands* with the legacy mappings and fills every unset field from
-    *defaults*. Keys naming a residue outside ``defaults.names`` are ignored
-    here - the caller reports them, because only it knows whether the residue was
-    skipped, cleaned away or simply misspelled.
+    *defaults*. Keys outside ``defaults.names`` are ignored here - the caller
+    reports them, since only it knows whether the residue was skipped, cleaned
+    away or misspelled.
     """
     ligands = dict(ligands or {})
     net_charges = dict(net_charges or {})

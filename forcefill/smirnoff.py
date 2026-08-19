@@ -1,27 +1,22 @@
 """Parameterize a ligand with a SMIRNOFF force field (OpenFF Sage) instead of GAFF.
 
-The alternative to the AmberTools path in :mod:`forcefill.amber`.
-Where GAFF assigns atom types from a perceived bond graph and derives charges
-with AM1-BCC through ``sqm``, SMIRNOFF assigns parameters by matching SMARTS
-patterns directly against the chemical graph - there are no atom types to get
-wrong, but there is also no way to guess the graph from coordinates. That is the
-one hard requirement this backend adds: **a ligand must arrive as a file with
-bond orders (SDF/MOL2) or as a SMILES**, never as a bare PDB residue.
+The alternative to the AmberTools path in :mod:`forcefill.amber`. SMIRNOFF
+assigns parameters by matching SMARTS patterns against the chemical graph, so
+there are no atom types to get wrong - but also no way to guess the graph from
+coordinates. Hence the one requirement this backend adds: **a ligand must arrive
+as a file with bond orders (SDF/MOL2) or as a SMILES**, never as a bare PDB
+residue.
 
 The work is done by :class:`openmmforcefields.generators.SMIRNOFFTemplateGenerator`,
-whose ``generate_residue_template`` returns a complete, self-contained ffxml
-string for one molecule. Two properties of that output shape this module:
+whose ``generate_residue_template`` returns a self-contained ffxml string for one
+molecule. Two properties of that output shape this module:
 
     * its atom types are named by a hash of the molecule, so two SMIRNOFF ffxmls
       - or a SMIRNOFF and a GAFF one - never collide and can be merged with
       :func:`~forcefill.merge_ffxml`;
-    * it names the residue template with a mapped SMILES rather than the
-      molecule's name, so :func:`smirnoff_residue_ffxml` rewrites it to the
-      residue name the rest of forcefill uses.
-
-``openff-toolkit`` and ``openmmforcefields`` are ordinary dependencies; the
-conda-forge channel is the recommended route for both, as it is for the rest of
-the stack.
+    * it names the residue template with a mapped SMILES, so
+      :func:`smirnoff_residue_ffxml` rewrites it to the residue name the rest of
+      forcefill uses.
 """
 
 from __future__ import annotations
@@ -97,10 +92,10 @@ def _load_molecule(spec: ResolvedSpec):  # -> an openff Molecule
 def _rename_residue_template(ffxml: str, name: str) -> str:
     """Rewrite the generated template's residue name to *name*.
 
-    openmmforcefields names the template with a mapped SMILES. OpenMM matches
-    templates by graph rather than by name so it would still work, but the name
-    is what appears in every error message, in the merged XML and in any
-    ``registerTemplate`` override - and a 60-character SMILES there is useless.
+    openmmforcefields names it with a mapped SMILES. OpenMM matches templates by
+    graph, so that would work - but the name is what appears in every error
+    message, in the merged XML and in any ``registerTemplate`` override, and a
+    60-character SMILES there is useless.
     """
     root = ET.fromstring(ffxml)
     residues = root.findall("./Residues/Residue")
@@ -119,7 +114,7 @@ def ligand_topology(spec: ResolvedSpec):  # -> (openmm Topology, Quantity)
     """Return ``(topology, positions)`` for the spec's molecule, for validating it on its own.
 
     Standalone mode has no input structure to check the generated template
-    against, so the molecule itself supplies one. Rebuilding it here rather than
+    against, so the molecule supplies one. Rebuilding it here rather than
     carrying it out of :func:`smirnoff_residue_ffxml` costs a file read and no
     charge assignment, which is the expensive half.
     """

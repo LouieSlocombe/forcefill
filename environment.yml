@@ -4,10 +4,10 @@
 #   conda activate forcefill
 #   pip install -e . --no-deps
 #
-# AmberTools (antechamber, parmchk2 and the GAFF data files) is conda-only,
-# which is why conda-forge is the recommended install route rather than pip.
-# rdkit and the OpenFF packages are on PyPI but are far better behaved from
-# conda-forge, so this file is the supported way to get the whole stack.
+# AmberTools (antechamber, parmchk2 and the GAFF data files) is conda-only, which
+# is why conda-forge is the recommended route rather than pip; rdkit and the
+# OpenFF packages are on PyPI but behave far better from conda-forge. This file is
+# the supported way to get the whole stack.
 name: forcefill
 
 channels:
@@ -20,8 +20,8 @@ dependencies:
   - openmm
   - parmed
   - ambertools
-  # Imported by forcefill at import time: rdkit for SMILES input and the ligand
-  # file readers, the OpenFF pair for the smirnoff backend.
+  # Imported at import time: rdkit for SMILES input and the ligand file readers,
+  # the OpenFF pair for the smirnoff backend.
   - rdkit
   - openff-toolkit
   - openmmforcefields

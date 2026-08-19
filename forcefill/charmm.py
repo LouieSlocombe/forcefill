@@ -1,43 +1,39 @@
 """Parameterize a ligand from CHARMM/CGenFF files instead of GAFF or SMIRNOFF.
 
-The third backend, and the only one that does not *derive* parameters. GAFF runs
-antechamber, SMIRNOFF matches SMARTS patterns; CGenFF parameters come from the
-``cgenff`` program or the ParamChem web service, neither of which is
-redistributable. What this module does is convert what they emit - a CHARMM
-stream file (``.str``) holding one ``RESI`` block and whatever parameters had to
-be assigned by analogy - into an OpenMM ffxml the rest of forcefill can validate,
-merge and minimize like any other.
+The third backend, and the only one that does not *derive* parameters: CGenFF
+parameters come from the ``cgenff`` program or the ParamChem web service,
+neither redistributable. This module converts what they emit - a CHARMM stream
+file (``.str``) holding one ``RESI`` block plus whatever had to be assigned by
+analogy - into an OpenMM ffxml the rest of forcefill treats like any other.
 
-**CHARMM is not interchangeable with Amber.** The two conventions disagree about
-1-4 scaling (Amber 0.8333/0.5, CHARMM 1.0/1.0) and OpenMM refuses to load force
-fields that disagree, so a CHARMM ligand needs
-:data:`~forcefill.CHARMM_BASE_FORCEFIELD` underneath it and cannot share a build
-with a gaff or smirnoff one. :func:`forcefill._pipeline.check_backends_match_base`
-is what says so up front.
+**CHARMM is not interchangeable with Amber.** The two disagree about 1-4 scaling
+(Amber 0.8333/0.5, CHARMM 1.0/1.0) and OpenMM will not load force fields that
+disagree, so a CHARMM ligand needs :data:`~forcefill.CHARMM_BASE_FORCEFIELD`
+underneath it and cannot share a build with a gaff or smirnoff one;
+:func:`forcefill._pipeline.check_backends_match_base` says so up front.
 
 **The output is a residue template, not a self-contained force field.**
 ``charmm36.xml`` already carries every CGenFF atom type and its parameters, so
-the generated XML names those types rather than redefining them. That is what
-makes the backend usable with nothing but a ParamChem ``.str``: no CHARMM toppar
-distribution to download, and no chance of a locally-supplied parameter file
-silently overriding the base force field.
+the generated XML names them rather than redefining them. That is what makes a
+bare ParamChem ``.str`` enough: no CHARMM toppar distribution to download, and
+no chance of silently overriding the base force field.
 
-Three properties of ParmEd's writer shape :func:`charmm_residue_ffxml`, and each
-one is a silent wrong answer rather than an error if it is not handled:
+Three properties of ParmEd's writer shape :func:`charmm_residue_ffxml`, each a
+silent wrong answer rather than an error if left unhandled:
 
     * it writes ``sigma="1.0" epsilon="0.0"`` for every atom type whose
-      non-bonded parameters it does not have, which *overrides* the real ones
-      when the file is loaded after ``charmm36.xml``;
+      non-bonded parameters it lacks, which *overrides* the real ones when the
+      file is loaded after ``charmm36.xml``;
     * with ``separate_ljforce=False`` the ligand's Lennard-Jones energy is
       counted twice, once in ``NonbondedForce`` and once in the
-      ``CustomNonbondedForce`` that ``charmm36.xml`` builds for its NBFIX pairs;
+      ``CustomNonbondedForce`` ``charmm36.xml`` builds for its NBFIX pairs;
     * given a stream file that names atom types without defining their masses -
-      which is every ParamChem stream file - it drops the residue template with
-      only a warning and writes an empty document.
+      every ParamChem stream file - it drops the residue template with only a
+      warning and writes an empty document.
 
 So the conversion injects the missing masses from the base force field, writes
-with ``separate_ljforce=True``, strips back everything the base force field
-already owns, and refuses to return a document with no residue in it.
+with ``separate_ljforce=True``, strips back what the base force field already
+owns, and refuses to return a document with no residue in it.
 """
 
 from __future__ import annotations
@@ -83,11 +79,11 @@ def _base_profile(
 ) -> tuple[dict[str, tuple[float, int]], tuple[float, float] | None, frozenset[str]]:
     """``(atom types, 1-4 scales, residue names)`` for a base force field.
 
-    One parse answers every question the pipeline asks of the base force field,
-    and it is cached: reading ``charmm36.xml`` is 6 MB of XML, and every residue
-    in a build would otherwise pay for it again. These are static data files, so
-    the cache cannot go stale within a process. The scales are None when the
-    force field declares no non-bonded terms at all.
+    One parse answers every question the pipeline asks, and it is cached:
+    ``charmm36.xml`` is 6 MB of XML that every residue in a build would
+    otherwise re-read. These are static data files, so the cache cannot go
+    stale. The scales are None when the force field declares no non-bonded
+    terms at all.
     """
     forcefield = app.ForceField(*base_forcefield)
     types = {}
@@ -104,10 +100,10 @@ def _base_profile(
 def base_atom_types(base_forcefield: Sequence[str] = CHARMM_BASE_FORCEFIELD) -> Mapping[str, tuple[float, int]]:
     """``{type name: (mass, atomic number)}`` for every atom type *base_forcefield* defines.
 
-    The CGenFF atom types live in ``charmm36.xml``, so this is what lets a bare
-    ParamChem stream file - which names types like ``CG331`` without ever saying
-    what they weigh - be converted at all. Read-only: the table behind it is
-    cached, and a caller editing it would change what every later build sees.
+    The CGenFF atom types live in ``charmm36.xml``, which is what lets a bare
+    ParamChem stream file - naming types like ``CG331`` without saying what they
+    weigh - be converted at all. Read-only: the table behind it is cached, so an
+    edit would change what every later build sees.
     """
     return MappingProxyType(_base_profile(tuple(base_forcefield))[0])
 
@@ -115,12 +111,10 @@ def base_atom_types(base_forcefield: Sequence[str] = CHARMM_BASE_FORCEFIELD) -> 
 def base_14_scales(base_forcefield: Sequence[str]) -> tuple[float, float] | None:
     """``(coulomb14scale, lj14scale)`` a base force field declares, or None if it declares none.
 
-    Read from the loaded force field rather than guessed from the file names,
-    which is what makes the compatibility check in
-    :func:`forcefill._pipeline.check_backends_match_base` work for a custom base
-    force field as well as for the two named presets. ``None`` means there is
-    nothing to be incompatible *with* - an empty base force field, or one with no
-    non-bonded terms at all.
+    Read from the loaded force field rather than guessed from the file names, so
+    :func:`forcefill._pipeline.check_backends_match_base` works for a custom base
+    force field as well as for the two presets. ``None`` means there is nothing
+    to be incompatible *with*.
     """
     return _base_profile(tuple(base_forcefield))[1]
 
@@ -128,9 +122,9 @@ def base_14_scales(base_forcefield: Sequence[str]) -> tuple[float, float] | None
 def base_residue_names(base_forcefield: Sequence[str] = CHARMM_BASE_FORCEFIELD) -> frozenset[str]:
     """Residue template names *base_forcefield* already defines.
 
-    ``charmm36.xml`` carries 814 of them - every amino acid, nucleotide, lipid
-    and CGenFF model compound - so a ligand named after one is much easier to
-    hit here than under an Amber base force field, and worth catching by name.
+    ``charmm36.xml`` carries 814 - every amino acid, nucleotide, lipid and
+    CGenFF model compound - so a ligand colliding with one is far easier to hit
+    here than under an Amber base force field, and worth catching by name.
     """
     return _base_profile(tuple(base_forcefield))[2]
 
@@ -164,11 +158,10 @@ def residue_template(params: CharmmParameterSet, name: str, files: Sequence[Path
     """Pick the residue *name* out of *params*, renaming a lone unnamed match.
 
     A stream file written for one ligand holds one ``RESI``, whose name is
-    whatever was typed into ParamChem and need not be the residue name in the
-    structure - so a single template is accepted and renamed, exactly as
-    :func:`forcefill.amber.load_residue_template` renames a mol2. Anything
-    ambiguous is refused: picking one of several would be a guess about which
-    molecule is being parameterized.
+    whatever was typed into ParamChem and need not match the structure - so a
+    single template is accepted and renamed, as
+    :func:`forcefill.amber.load_residue_template` renames a mol2. Several is
+    refused: picking one would be a guess about which molecule this is.
     """
     residues = params.residues
     if not residues:
@@ -195,9 +188,9 @@ def residue_template(params: CharmmParameterSet, name: str, files: Sequence[Path
 def _inject_atom_types(params: CharmmParameterSet, template: ResidueTemplate, known: Mapping[str, tuple[float, int]]):
     """Give *params* an AtomType for every type *template* uses but does not define.
 
-    Without this ParmEd's writer drops the residue template and produces an empty
-    document, warning but not failing - and a ParamChem stream file never carries
-    the ``MASS`` records that would avoid it, because the types it uses are
+    Without this ParmEd's writer drops the residue template and writes an empty
+    document, warning rather than failing - and a ParamChem stream file never
+    carries the ``MASS`` records that would avoid it, since its types are
     CGenFF's own.
     """
     missing = sorted({atom.type for atom in template.atoms} - set(params.atom_types))
@@ -222,10 +215,10 @@ def _prune_base_definitions(xml_file: Path, known: Mapping[str, tuple[float, int
     """Strip everything the base force field already owns; returns what went.
 
     ParmEd writes an ``<AtomTypes>`` entry and a zero-valued non-bonded entry for
-    every type the residue uses, including the ones it only knows the mass of.
-    Left in place, loading the file after ``charmm36.xml`` redefines those types
-    and replaces their real Lennard-Jones parameters with ``epsilon=0`` - silently,
-    since OpenMM treats a later definition as an override rather than a clash.
+    every type the residue uses, including ones it only knows the mass of. Left
+    in place, loading after ``charmm36.xml`` replaces the real Lennard-Jones
+    parameters with ``epsilon=0`` - silently, since OpenMM treats a repeated atom
+    type as an override, not a clash.
     """
     root = ET.parse(str(xml_file)).getroot()
     dropped: list[str] = []
@@ -267,10 +260,10 @@ def charmm_residue_ffxml(
 ) -> str:
     """Convert one ligand's CHARMM files into an OpenMM force-field XML and return the path.
 
-    The result names CGenFF's own atom types rather than redefining them, so it
-    is meaningful only when loaded on top of *base_forcefield*. It carries the
-    residue template plus any parameters the CHARMM files themselves define -
-    for a ParamChem stream file, the terms it had to assign by analogy.
+    The result names CGenFF's atom types rather than redefining them, so it is
+    meaningful only on top of *base_forcefield*. It carries the residue template
+    plus whatever the CHARMM files themselves define - for a ParamChem stream
+    file, the terms assigned by analogy.
 
     Args:
         spec: The ligand. Must carry ``charmm_files``; ``atom_type``,
@@ -340,7 +333,7 @@ def atom_elements(
     """Elements for a residue template's atoms, in order; None where undeterminable.
 
     A ``RESI`` block names atom *types*, not elements, and ParmEd leaves
-    ``Atom.atomic_number`` at 0 unless the same files also carried the ``MASS``
+    ``Atom.atomic_number`` at 0 unless the files also carried the ``MASS``
     records - which a ParamChem stream file does not. So the base force field is
     what turns ``CG331`` back into carbon.
     """
@@ -359,10 +352,9 @@ def ligand_topology(
     """Return a Topology for the spec's ligand, for validating it on its own.
 
     Coordinates deliberately absent: a CHARMM stream file records internal
-    coordinates rather than Cartesian ones, and ParmEd leaves the template's
-    positions at the origin. Validation only needs the bond graph; minimization
-    needs real geometry, which means starting from a structure with
-    :func:`~forcefill.build_forcefield_xml`.
+    coordinates, not Cartesian ones, so ParmEd leaves the template's positions at
+    the origin. Validation only needs the bond graph; minimization needs real
+    geometry, i.e. :func:`~forcefill.build_forcefield_xml` with a structure.
     """
     params = read_charmm_files(spec.charmm_files)
     template = residue_template(params, spec.name, spec.charmm_files)

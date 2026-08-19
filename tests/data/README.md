@@ -30,11 +30,10 @@ parmchk2 -i methanol.mol2 -f mol2 -o methanol.frcmod -s gaff2 -a Y
 | `methanol_cgenff.str` | CGenFF parameters for the test methanol (residue `LIG`), with a `read param` section so the analogy-parameter path is exercised |
 | `chloroethanol_cgenff.str` | The same for 2-chloroethanol (residue `CET`), used by the tests that go through a structure |
 
-These two are **hand-written stand-ins for ParamChem output**, not real
-`cgenff` runs — the program is licensed and its output is not redistributable.
-They are written in the format it emits, and the atom types and the parameters
-in `methanol_cgenff.str` are the real CGenFF ones, taken from
-`top_all36_cgenff.rtf` / `par_all36_cgenff.prm`:
+These are **hand-written stand-ins for ParamChem output**, not real `cgenff`
+runs — the program is licensed and its output is not redistributable. They use
+the format it emits, and the atom types and parameters in `methanol_cgenff.str`
+are the real CGenFF ones, from `top_all36_cgenff.rtf` / `par_all36_cgenff.prm`:
 
 * `methanol_cgenff.str` reproduces `RESI MEOH` with the test methanol's atom
   names (`C1`/`O1`/`H1`–`H4`, matching `tests/helpers.py:METHANOL_ATOMS`);
@@ -44,9 +43,9 @@ in `methanol_cgenff.str` are the real CGenFF ones, taken from
 
 The tests assert mechanics — that a residue template is written, that nothing
 `charmm36.xml` already defines is redefined, and that its Lennard-Jones
-parameters survive — so nothing depends on those charges being the ones
-ParamChem would produce. Do not copy either file into real work: run the ligand
-through ParamChem (<https://cgenff.paramchem.org>) instead.
+parameters survive — so nothing depends on those charges matching ParamChem's.
+Do not copy either file into real work: run the ligand through
+[ParamChem](https://cgenff.paramchem.org) instead.
 
 Two properties are load-bearing and easy to break by editing:
 

@@ -4,23 +4,20 @@ antechamber's AM1-BCC can take an hour on a drug-sized ligand. Three mistakes
 waste it, and all three are visible in the input:
 
     * the **net charge** is left at 0 while the ligand file says the molecule is
-      an amidinium - the charges come out plausible and wrong, and nothing
-      downstream notices;
+      an amidinium - the charges come out plausible and wrong;
     * the supplied file is **not the same molecule** as the residue in the
       structure, which otherwise surfaces at the very end as an opaque OpenMM
       "no template matched";
     * atoms sit **on top of each other**, which surfaces as a NaN energy.
 
-Running this as one pass up front also means a mistake in the last ligand does
-not cost the parameterization of the first.
+One pass up front also means a mistake in the last ligand does not cost the
+parameterization of the first.
 
-The reading and the checks themselves live in :mod:`forcefill.ligand_files`;
-this module is what applies them to a set of specs. A charmm ligand goes through
-the same two composition checks, reading its ``RESI`` block instead of a ligand
-file - the CGenFF conversion is cheap, but a stream file generated for a
-different protonation state than the structure holds is the same mistake and
-deserves the same message. The checks that run *after* parameterization, on the
-generated force field, are :mod:`forcefill.checks`.
+The reading and the checks live in :mod:`forcefill.ligand_files`; this module
+applies them to a set of specs. A charmm ligand gets the same two composition
+checks against its ``RESI`` block: the conversion is cheap, but a stream file
+written for a different protonation state than the structure holds is the same
+mistake. The post-parameterization checks are :mod:`forcefill.checks`.
 """
 
 from __future__ import annotations
@@ -73,9 +70,9 @@ def _resolve_smiles(spec: ResolvedSpec, residue: app.topology.Residue | None, po
 def _charmm_file_info(spec: ResolvedSpec, base_forcefield: Sequence[str]) -> ligand_files.LigandFileInfo:
     """Describe a charmm ligand the way :mod:`forcefill.ligand_files` describes a file.
 
-    Reading the CHARMM files here is what makes a mismatch - a stream file
-    generated for a different protonation state than the structure holds -
-    an error before the conversion rather than an unmatched template after it.
+    Reading the CHARMM files here makes a mismatch - a stream file written for a
+    different protonation state than the structure holds - an error before the
+    conversion rather than an unmatched template after it.
     """
     params = charmm.read_charmm_files(spec.charmm_files)
     template = charmm.residue_template(params, spec.name, spec.charmm_files)
@@ -94,10 +91,9 @@ def _apply_net_charge(spec: ResolvedSpec, info: ligand_files.LigandFileInfo) -> 
     """Fill in or cross-check the net charge against what the ligand file says.
 
     A file with real bond orders knows its own formal charge, so leaving
-    ``net_charge`` unset is no longer a silent vote for 0. An explicit value that
-    contradicts the file is refused outright: one of the two is wrong, and
-    guessing which produces exactly the plausible-but-wrong charges this is meant
-    to prevent.
+    ``net_charge`` unset is not a silent vote for 0. An explicit value that
+    contradicts the file is refused: one of the two is wrong, and guessing which
+    produces exactly the plausible-but-wrong charges this prevents.
     """
     if info.formal_charge is None:
         if spec.net_charge is None:

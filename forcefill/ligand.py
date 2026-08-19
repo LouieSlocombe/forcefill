@@ -10,17 +10,16 @@ themselves::
     build_ligand_xml("ben.str", "ben.xml", base_forcefield=CHARMM_BASE_FORCEFIELD)
 
 Same backends, same preflight checks, same output: an ffxml you load next to the
-standard force fields. What changes is what the validation can check. With no
-structure there is no bond graph to match the generated template against, so the
-molecule itself supplies the topology - which makes the check narrower but not
-weaker: it still proves the template covers every atom and that no parameter is
-missing, and with ``minimize=True`` that the numbers are physical. The charmm
-backend is the exception: its input carries no Cartesian coordinates, so it can
-be validated here but not minimized.
+standard force fields. What changes is the validation. With no structure there is
+no bond graph to match the generated template against, so the molecule supplies
+its own topology - narrower, but not weaker: it still proves the template covers
+every atom and that no parameter is missing, and with ``minimize=True`` that the
+numbers are physical. The charmm backend carries no Cartesian coordinates, so it
+can be validated here but not minimized.
 
-The one thing this cannot tell you is whether the ligand matches the protein
-complex you eventually load it with. If you have that structure, use
-:func:`~forcefill.build_forcefield_xml` instead - it checks exactly that.
+What this cannot tell you is whether the ligand matches the complex you
+eventually load it with. If you have that structure, use
+:func:`~forcefill.build_forcefield_xml`, which checks exactly that.
 """
 
 from __future__ import annotations
@@ -62,12 +61,11 @@ LigandInput = PathLike | LigandSpec | Sequence[PathLike | LigandSpec] | Mapping[
 def _coerce_spec(value: LigandSpec | PathLike) -> LigandSpec:
     """Turn a bare path into a spec; pass a spec through.
 
-    A plain string is always a *path*, never a SMILES. The two are not reliably
-    distinguishable (``C`` is both a valid filename and methane), and guessing
-    wrong would silently parameterize the wrong molecule - so a SMILES must say
-    so, as ``LigandSpec(smiles=...)``. A CHARMM file is recognized by its suffix
-    and becomes ``charmm_files``: it is a parameter set, not a molecule file, and
-    nothing else in forcefill would know what to do with it.
+    A plain string is always a *path*, never a SMILES: the two are not reliably
+    distinguishable (``C`` is both a filename and methane), and guessing wrong
+    would silently parameterize the wrong molecule - so a SMILES must say so, as
+    ``LigandSpec(smiles=...)``. A CHARMM suffix becomes ``charmm_files``: it is a
+    parameter set, not a molecule file.
     """
     if isinstance(value, LigandSpec):
         return value
@@ -120,10 +118,10 @@ def _ligand_topology(
 ) -> tuple[app.Topology, unit.Quantity | None]:
     """Topology and coordinates for validating one ligand on its own.
 
-    For gaff that comes from the mol2 antechamber wrote, which is the molecule as
-    it was actually parameterized; for smirnoff, from the molecule itself. A
-    charmm ligand has no coordinates at all - a stream file records internal
-    ones - so it returns None, and only the graph can be checked.
+    For gaff that comes from the mol2 antechamber wrote - the molecule as it was
+    actually parameterized - and for smirnoff from the molecule itself. A charmm
+    ligand has no Cartesian coordinates, so it returns None and only the graph
+    can be checked.
     """
     if spec.backend == "charmm":
         return charmm.ligand_topology(spec, base_forcefield), None
@@ -159,12 +157,11 @@ def build_ligand_xml(
     Args:
         ligands: What to parameterize. A path (``"lig.sdf"``), a
             :class:`~forcefill.LigandSpec`, a sequence of either, or a
-            ``{residue_name: spec_or_path}`` mapping. Residue names not given
-            explicitly are derived from the file name
-            (``benzamidinium.sdf`` -> ``BEN``). A bare string is always a file
-            path; a SMILES must be given as ``LigandSpec(smiles=...)``. A path
-            with a CHARMM suffix (``ben.str``) is taken as that ligand's CGenFF
-            parameters and puts it on the charmm backend.
+            ``{residue_name: spec_or_path}`` mapping. Names not given explicitly
+            are derived from the file name (``benzamidinium.sdf`` -> ``BEN``). A
+            bare string is always a path; a SMILES must be given as
+            ``LigandSpec(smiles=...)``. A CHARMM suffix (``ben.str``) is taken as
+            that ligand's CGenFF parameters and puts it on the charmm backend.
         output_xml: Where to write the combined force-field XML.
         base_forcefield: ffxml files loaded underneath the generated one for the
             validation and minimization checks. Not used to decide what needs
@@ -186,8 +183,8 @@ def build_ligand_xml(
             ``openmm.System`` for each ligand on its own (default).
         minimize: Also energy-minimize each ligand in vacuum, which catches
             unphysical parameters that a System build accepts. Reported in
-            ``minimizations``. Not available for the charmm backend, whose
-            input carries no coordinates.
+            ``minimizations``. Unavailable for the charmm backend, whose input
+            carries no coordinates.
         strict: Raise on a ligand whose geometry is unusable (coincident atoms,
             no conformer) rather than warn.
         antechamber_args: Extra raw antechamber arguments for every ligand.
@@ -242,9 +239,8 @@ def build_ligand_xml(
 
     minimizations: dict[str, MinimizationResult] = {}
     with _pipeline.working_directory(workdir, output_xml, prefix="ligand_ff_", cleanup=cleanup) as wd:
-        # No structure, so there is nothing to compare against - but the net
-        # charge and the geometry are still read and checked here, before the
-        # first antechamber run.
+        # No structure to compare against, but the net charge and the geometry
+        # are still read and checked before the first antechamber run.
         specs = preflight_specs(specs, {}, None, wd, strict=strict, base_forcefield=base_forcefield)
 
         artifacts = _pipeline.parameterize_all(

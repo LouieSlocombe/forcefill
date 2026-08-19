@@ -1,9 +1,8 @@
 """Tests for :mod:`forcefill.ligand_files`: reading ligand files and the preflight checks.
 
 Hermetic - no AmberTools. Every reader is exercised twice, through RDKit and
-through the text readers, because RDKit genuinely cannot parse some of what
-forcefill is handed (the GAFF-typed mol2 antechamber writes, above all) and the
-text path is what covers it.
+through the text readers: RDKit cannot parse some of what forcefill is handed
+(the GAFF-typed mol2 antechamber writes, above all), and the text path covers it.
 """
 
 from pathlib import Path

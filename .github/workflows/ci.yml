@@ -14,10 +14,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      # This version is pinned in three places that must agree: here, the ruff rev in
+      # Pinned in three places that must agree: here, the ruff rev in
       # .pre-commit-config.yaml, and the `dev` extra in pyproject.toml. ruff's
-      # formatter output can change between releases, so a skew is what lets a
-      # locally-clean tree fail the format gate below.
+      # formatter output changes between releases, so a skew lets a locally-clean
+      # tree fail the format gate below.
       - uses: astral-sh/ruff-action@v3
         with:
           version: "0.16.2"
@@ -49,9 +49,8 @@ jobs:
       - run: pip install -e . --no-deps
       - run: python -c "import forcefill; print(forcefill.__version__)"
       # environment.yml includes ambertools, so the integration tests run the real
-      # antechamber/parmchk2/sqm pipeline here — that end-to-end path is the whole
-      # point of the library. The floor is set against the with-AmberTools number
-      # (92% when adopted); raise it as coverage improves — it only ratchets one way.
+      # antechamber/parmchk2/sqm pipeline here. The floor is set against the
+      # with-AmberTools number (92% when adopted); raise it as coverage improves.
       - name: Run tests with coverage
         run: pytest --cov --cov-report=term --cov-report=xml --cov-fail-under=85
       - uses: actions/upload-artifact@v4
@@ -60,8 +59,8 @@ jobs:
           name: coverage-py${{ matrix.python }}
           path: coverage.xml
 
-  # A wheel that imports is not the same as an editable checkout that imports: this
-  # catches packaging mistakes such as a missing package-data entry.
+  # A wheel that imports is not the same as an editable checkout that imports:
+  # this catches packaging mistakes such as a missing package-data entry.
   build:
     runs-on: ubuntu-latest
     defaults:

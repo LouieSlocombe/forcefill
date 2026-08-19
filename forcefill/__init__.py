@@ -36,18 +36,17 @@ from .merge import merge_ffxml
 from .structure import build_forcefield_xml
 from .topology import extract_residue_to_pdb, find_nonstandard_residues
 
-# Single source of truth for the version is pyproject.toml; installed metadata
-# carries it. The fallback covers running from an uninstalled checkout.
+# The version lives in pyproject.toml and reaches here through the installed
+# metadata; the fallback covers an uninstalled checkout.
 try:
     __version__ = _metadata.version("forcefill")
 except _metadata.PackageNotFoundError:  # uninstalled checkout
     __version__ = "0.0.0+unknown"
 
-# The reading and conversion helpers stay behind their modules rather than being
-# re-exported: `forcefill.ligand_files.inspect_ligand_file(...)`,
-# `forcefill.smirnoff.installed_smirnoff_forcefields()` and
-# `forcefill.charmm.read_charmm_files(...)` say where they belong, and the top
-# level stays about the pipeline.
+# The reading and conversion helpers are not re-exported: they say where they
+# belong (`forcefill.ligand_files.inspect_ligand_file(...)`,
+# `forcefill.charmm.read_charmm_files(...)`), and the top level stays about the
+# pipeline.
 __all__ = [
     "ADDITIVE_RESIDUES",
     "BACKENDS",

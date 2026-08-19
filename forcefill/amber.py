@@ -1,21 +1,17 @@
 """The AmberTools layer: run antechamber and parmchk2, then assemble their output with ParmEd.
 
-Two halves, in pipeline order.
+``antechamber`` assigns GAFF/GAFF2 atom types and AM1-BCC charges (-> mol2),
+``parmchk2`` fills in the missing GAFF parameters (-> frcmod). Neither is a
+Python package, so both must be on ``PATH``
+(``conda install -c conda-forge ambertools``); :func:`locate_gaff_dat` finds the
+parameter database in the same installation.
 
-**The executables.** ``antechamber`` assigns GAFF/GAFF2 atom types and AM1-BCC
-charges (-> mol2), ``parmchk2`` fills in whatever GAFF parameters are missing
-(-> frcmod). Neither is a Python package, so both must be on ``PATH``:
-``conda install -c conda-forge ambertools``. :func:`require_executable` is the
-single place that says so, and :func:`locate_gaff_dat` finds the parameter
-database inside the same installation.
+:func:`assemble_openmm_ffxml` then hands ParmEd the GAFF database, the frcmods
+and the mol2 templates and gets one OpenMM ffxml back. That works for
+Amber-style input only; merging in a finished SMIRNOFF document is
+:mod:`forcefill.merge`'s job.
 
-**The assembly.** :func:`assemble_openmm_ffxml` hands ParmEd the GAFF database,
-the frcmods and the mol2 templates and gets one OpenMM ffxml back. That works
-only for Amber-style input; merging a finished SMIRNOFF document into the same
-file is :mod:`forcefill.merge`'s job.
-
-Nothing here knows about residues, specs or the pipeline - it is the thinnest
-wrapper over AmberTools that still gives a useful error message.
+Nothing here knows about residues, specs or the pipeline.
 """
 
 from __future__ import annotations
@@ -45,7 +41,7 @@ __all__ = [
 ]
 
 #: Ceiling for a single AmberTools invocation, in seconds. sqm's AM1-BCC on a
-#: large ligand can legitimately take many minutes; nothing should take an hour.
+#: large ligand can take many minutes; nothing should take an hour.
 DEFAULT_AMBERTOOLS_TIMEOUT: float = 3600.0
 
 #: File suffix -> antechamber -fi format, for run_antechamber's inference.
@@ -128,9 +124,9 @@ def run_antechamber(
 
     *input_file* may be a PDB or a ligand file with explicit bonds (SDF/MOL2);
     ``input_format`` (antechamber ``-fi``) is inferred from the suffix when not
-    given. ``purge_scratch=False`` keeps antechamber's ANTECHAMBER_*/sqm
-    scratch files after a successful run (they always survive a failed one),
-    which is the way to audit suspicious charges. ``timeout`` is in seconds.
+    given. ``purge_scratch=False`` keeps the ANTECHAMBER_*/sqm scratch files
+    after a successful run (they always survive a failed one), which is how to
+    audit suspicious charges. ``timeout`` is in seconds.
     """
     check_choice(atom_type, ATOM_TYPES, "atom_type")
     check_choice(charge_method, CHARGE_METHODS, "charge_method")
@@ -266,10 +262,10 @@ def assemble_openmm_ffxml(
 ) -> str:
     """Merge mol2 residue templates and Amber parameter files into a single OpenMM force-field XML.
 
-    ``parameter_files`` typically holds the GAFF database (gaff*.dat) plus the
-    per-residue frcmod files. With ``write_unused=False`` only the atom types
-    and parameters actually referenced by the residue templates are written,
-    which keeps the XML small even though the full GAFF database is loaded.
+    ``parameter_files`` is typically the GAFF database (gaff*.dat) plus the
+    per-residue frcmods. With ``write_unused=False`` only the atom types and
+    parameters the templates reference are written, which keeps the XML small
+    even though the full GAFF database is loaded.
     """
     params = AmberParameterSet(*[str(f) for f in parameter_files])
     omm_params = OpenMMParameterSet.from_parameterset(params)

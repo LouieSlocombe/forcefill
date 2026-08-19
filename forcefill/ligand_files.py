@@ -1,22 +1,14 @@
 """Read a ligand file well enough to check it before the expensive step runs.
 
-Everything here exists to move a failure earlier. antechamber's AM1-BCC can take
-an hour on a drug-sized ligand, and the two mistakes that waste it are both
-visible in the input file:
-
-    * the **net charge** is wrong, because it was left at the default 0 while the
-      SDF says the molecule is an amidinium - the charges come out plausible and
-      wrong, and nothing downstream notices;
-    * the supplied ligand file is not the **same molecule** as the residue in the
-      PDB (an extra hydrogen, a different tautomer), which only surfaces at the
-      very end as an opaque OpenMM "no template matched" error.
-
 :func:`inspect_ligand_file` reads elements, bonds, coordinates and formal charge
-out of SDF (V2000 and V3000), MOL2 and PDB. RDKit does the reading where it can,
-and small text readers cover what it cannot - chiefly the GAFF-typed mol2
-antechamber writes, whose atom types are not SYBYL ones. ``formal_charge`` is
-the one field the text readers cannot always recover, which is why
-``prefer_rdkit`` exists and defaults to True.
+out of SDF (V2000 and V3000), MOL2 and PDB; :func:`check_matches_residue` and
+:func:`check_geometry` are the checks built on it, applied to a whole run by
+:mod:`forcefill.preflight`.
+
+RDKit does the reading where it can, and small text readers cover what it cannot
+- chiefly the GAFF-typed mol2 antechamber writes, whose atom types are not SYBYL
+ones. ``formal_charge`` is the one field the text readers cannot always recover,
+which is why ``prefer_rdkit`` exists and defaults to True.
 """
 
 from __future__ import annotations
@@ -113,10 +105,9 @@ def residue_formula(residue: app.topology.Residue) -> Counter[str]:
 def _rdkit_mol_from_file(path: Path):  # -> an rdkit Mol, which we cannot annotate without importing it
     """Load *path* with RDKit, or return None if RDKit cannot read it.
 
-    Returning None is not about RDKit being unavailable - it is a hard
-    dependency. It is about the formats RDKit genuinely will not parse, chiefly
-    the GAFF-typed mol2 antechamber writes, whose atom types are not SYBYL ones.
-    The text readers below cover those.
+    None means the format defeated RDKit - chiefly the GAFF-typed mol2
+    antechamber writes, whose atom types are not SYBYL ones - not that RDKit is
+    missing; it is a hard dependency. The text readers below cover those.
     """
     # RDKit narrates every valence complaint to stderr; the caller gets a proper
     # message from the checks below instead.
@@ -240,14 +231,13 @@ def _read_sdf(path: Path) -> LigandFileInfo:
 def _read_mol2(path: Path) -> LigandFileInfo:
     """Read a MOL2 with ParmEd, which knows the atom types RDKit's parser rejects.
 
-    Hand-parsing the type column does not work: a mol2 written by antechamber
-    carries GAFF types (``c3``, ``ho``, ``oh``), not SYBYL ones (``C.3``), and
-    they are ambiguous with element symbols - GAFF's ``ca`` is an aromatic
-    carbon, not calcium. ParmEd resolves them properly.
+    Hand-parsing the type column does not work: antechamber writes GAFF types
+    (``c3``, ``ho``, ``oh``), not SYBYL ones (``C.3``), and they are ambiguous
+    with element symbols - GAFF's ``ca`` is an aromatic carbon, not calcium.
 
     MOL2 has no formal-charge field, so the net charge is the rounded sum of the
-    partial charges - reported only when they are not all zero and the sum is
-    close enough to an integer to be a real net charge rather than rounding noise.
+    partial charges, reported only when they are not all zero and the sum is
+    close enough to an integer to be real.
     """
     template = parmed.load_file(str(path))
     if isinstance(template, ResidueTemplateContainer):
@@ -367,8 +357,8 @@ def check_matches_residue(
     """Check that a supplied ligand file is the same molecule as the PDB residue.
 
     The generated template is matched against the *PDB's* bond graph, so a file
-    that differs by even one hydrogen produces a template that cannot match -
-    but only after antechamber has run. This says so in a second, and names the
+    differing by even one hydrogen produces a template that cannot match - and
+    only after antechamber has run. This says so in a second, and names the
     difference.
 
     Args:
@@ -421,9 +411,8 @@ def check_geometry(
     """Check *positions* (angstrom) for the geometry faults that produce NaN energies.
 
     Catches coincident atoms, non-finite coordinates and an all-zero conformer
-    (a molecule written without 3D coordinates). These are the standard causes of
-    the infinite energies that ``minimize=True`` otherwise only finds at the very
-    end, after every expensive step has run.
+    (a molecule written without 3D coordinates) - the standard causes of the
+    infinite energies ``minimize=True`` otherwise only finds at the very end.
 
     Args:
         positions: Coordinates in angstrom.
@@ -492,11 +481,9 @@ def _write_sdf(mol, out_sdf: PathLike) -> str:  # mol is an rdkit Mol
 def smiles_to_sdf(smiles: str, out_sdf: PathLike, name: str = "LIG", *, random_seed: int = 0xF0) -> str:
     """Embed *smiles* as a 3D SDF with explicit hydrogens and return the path.
 
-    The recipe is the one ``examples/prepare_trypsin_ben.py`` uses by hand: add
-    hydrogens, embed a conformer, then relax it with MMFF so the geometry the
-    charges are derived from is not merely valid but reasonable. The seed is
-    fixed so a re-run reproduces the same conformer and therefore the same
-    charges.
+    Add hydrogens, embed a conformer, relax it with MMFF - so the geometry the
+    charges are derived from is reasonable, not merely valid. The seed is fixed
+    so a re-run reproduces the same conformer and therefore the same charges.
 
     Raises:
         RuntimeError: RDKit could not parse the SMILES or embed a conformer.
@@ -528,11 +515,10 @@ def smiles_with_residue_geometry(
 ) -> str:
     """Apply *smiles*' bond orders to the geometry in *residue_pdb* and write an SDF.
 
-    The best of both when a ligand is present in the structure but the structure
-    cannot say what its bonds are: coordinates and atom count come from the PDB,
-    bond orders and formal charges from the SMILES. The two must describe the
-    same molecule, hydrogens included - that is what
-    ``AssignBondOrdersFromTemplate`` enforces.
+    For a ligand present in the structure whose bonds the structure cannot state:
+    coordinates and atom count come from the PDB, bond orders and formal charges
+    from the SMILES. The two must describe the same molecule, hydrogens included
+    - ``AssignBondOrdersFromTemplate`` enforces that.
 
     Raises:
         RuntimeError: RDKit could not read either input, or the SMILES does not
@@ -566,8 +552,7 @@ def split_multi_sdf(path: PathLike, outdir: PathLike) -> dict[str, str]:
 
     Names come from each record's title line, uppercased and cleaned; records
     with no usable title are named ``<stem>1``, ``<stem>2``, ... A duplicate name
-    raises rather than overwriting, since two molecules cannot share one residue
-    template.
+    raises rather than overwriting - two molecules cannot share a template.
 
     Returns:
         ``{residue_name: sdf_path}``, in file order.
@@ -585,10 +570,9 @@ def split_multi_sdf(path: PathLike, outdir: PathLike) -> dict[str, str]:
 
     out: dict[str, str] = {}
     for index, record in enumerate(records, start=1):
-        # record[0] is the title line, which is very often blank - hence the
-        # line-exact split above. Trimming leading blank lines instead would
-        # promote line 2, the program line ("     RDKit          3D"), into the
-        # residue name.
+        # record[0] is the title line, often blank - hence the line-exact split
+        # above. Trimming blank lines instead would promote line 2, the program
+        # line ("     RDKit          3D"), into the residue name.
         title = record[0].strip()
         name = _residue_name_from(title) or _residue_name_from(f"{path.stem}{index}") or f"L{index:02d}"
         if name in out:
@@ -631,10 +615,9 @@ def _residue_name_from(text: str) -> str:
 def residue_name_for(path: PathLike) -> str:
     """Derive a residue name from a ligand file's stem (``benzamidinium.sdf`` -> ``BEN``).
 
-    Predictable beats clever: the file name is what the caller can see and
-    change, so it is the only thing consulted. Pass an explicit mapping to
-    :func:`~forcefill.build_ligand_xml` when the derived name is not the one you
-    want.
+    Only the file name is consulted - it is what the caller can see and change.
+    Pass an explicit mapping to :func:`~forcefill.build_ligand_xml` when the
+    derived name is not the one you want.
     """
     stem = Path(path).stem
     name = _residue_name_from(stem)

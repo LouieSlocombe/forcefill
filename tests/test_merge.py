@@ -1,8 +1,8 @@
 """Tests for :func:`forcefill.merge_ffxml`.
 
-Hermetic: hand-written ffxml fragments, no AmberTools and no OpenFF. The one
-thing these encode that is easy to lose is *why* two sections sometimes have to
-stay apart - see the ordering test.
+Hermetic: hand-written ffxml fragments, no AmberTools and no OpenFF. What is
+easy to lose here is *why* two sections sometimes have to stay apart - see the
+ordering test.
 """
 
 import xml.etree.ElementTree as ET

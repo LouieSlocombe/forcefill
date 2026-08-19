@@ -1,79 +1,73 @@
 # Example: benzamidine bound to trypsin (PDB 3PTB)
 
-A complete, honest walkthrough of the part of ligand parameterization that
-tools cannot do for you — structure preparation — followed by the part
-forcefill does: turning the prepared complex into a working force field.
+A walkthrough of the part of ligand parameterization that tools cannot do for
+you — structure preparation — followed by the part forcefill does: turning the
+prepared complex into a working force field.
 
 ```bash
 conda activate forcefill        # needs ambertools on PATH
 python parameterize_ligand.py
 ```
 
-There is a second, shorter script for the case where you have no structure at
-all — just the ligand:
-
-```bash
-python parameterize_ligand_standalone.py
-```
-
-It runs `build_ligand_xml` on the same `data/benzamidinium.sdf` through both
-backends (GAFF2 and OpenFF Sage) and then through both at once, merged into a
-single XML. It never states the net charge: the SDF says `+1` and forcefill
-reads it, which is the difference between that script and the one below.
-
-A third script covers CHARMM, where the parameters come from outside forcefill
-entirely:
-
-```bash
-python parameterize_ligand_charmm.py    # no AmberTools, no toppar download
-```
-
-It converts `data/benzamidinium_cgenff.str` into an ffxml, loads it on top of
-`charmm36.xml`, minimizes benzamidinium at the crystal geometry, and then shows
-the two combinations OpenMM could never load — a CHARMM ligand with an Amber
-base force field, and a CHARMM ligand mixed with a GAFF one — being refused by
-name. That refusal is the point: the two conventions scale 1-4 interactions
-differently, so mixing them is not a trade-off but an error.
-
 `parameterize_ligand.py` runs `build_forcefield_xml(minimize=True)` on the
-prepared structure and writes `ben_ff.xml`. The `minimize=True` proves the
-result from inside the library — a finite energy that a minimizer can lower,
-for benzamidinium alone and for the whole complex — and the script then loads
-`amber14 + ben_ff.xml` by hand and runs a few steps of dynamics, which is how
-you would actually use the file.
+prepared structure and writes `ben_ff.xml`. The `minimize=True` proves the result
+from inside the library — a finite energy that a minimizer can lower, for
+benzamidinium alone and for the whole complex — and the script then loads
+`amber14 + ben_ff.xml` by hand and runs a few steps of dynamics, which is how you
+would actually use the file.
+
+Two more scripts cover the other entry points:
+
+```bash
+python parameterize_ligand_standalone.py   # no structure: the ligand file is the input
+python parameterize_ligand_charmm.py       # no AmberTools, no toppar download
+```
+
+The standalone script runs `build_ligand_xml` on the same
+`data/benzamidinium.sdf` through both backends (GAFF2 and OpenFF Sage), then
+through both at once merged into a single XML. It never states the net charge:
+the SDF says `+1` and forcefill reads it, which is what separates it from the
+script above.
+
+The CHARMM script converts `data/benzamidinium_cgenff.str` into an ffxml, loads
+it on top of `charmm36.xml`, minimizes benzamidinium at the crystal geometry, and
+then shows the two combinations OpenMM could never load — a CHARMM ligand with an
+Amber base force field, and a CHARMM ligand mixed with a GAFF one — being refused
+by name. That refusal is the point: the two conventions scale 1-4 interactions
+differently, so mixing them is an error, not a trade-off.
 
 ## Where the prepared structure came from
 
 `data/trypsin_ben_prepared.pdb` and `data/benzamidinium.sdf` were produced by
-`prepare_trypsin_ben.py` from the deposited 3PTB entry. The script is short,
-and every step in it is a decision you will face with your own systems:
+`prepare_trypsin_ben.py` from the deposited 3PTB entry. Every step in it is a
+decision you will face with your own systems:
 
 1. **The protein and waters** get missing atoms and hydrogens from
    [PDBFixer](https://github.com/openmm/pdbfixer) at pH 7. PDBFixer *cannot*
-   protonate the ligand — it has hydrogen templates only for standard
-   residues — so benzamidine comes out of this step still bare. This is the
-   step people miss: an X-ray structure has no hydrogens anywhere, and
-   `Modeller.addHydrogens` quietly fixes only the residues it knows.
-2. **The ligand's ionization state is your call, not software's.**
-   Benzamidine's amidine group (pKa ≈ 11.6) is protonated at physiological
-   pH — that is precisely why it binds the S1 pocket of trypsin. The deposited
-   formula (`C7 H8 N2`, neutral) is *not* what you should simulate. RDKit
-   assigns bond orders from the SMILES template `NC(=[NH2+])c1ccccc1` and adds
-   hydrogens with 3D coordinates, giving benzamidinium (+1, 18 atoms).
+   protonate the ligand — it has hydrogen templates only for standard residues —
+   so benzamidine comes out still bare. This is the step people miss: an X-ray
+   structure has no hydrogens anywhere, and `Modeller.addHydrogens` quietly
+   fixes only the residues it knows.
+2. **The ligand's ionization state is your call, not software's.** Benzamidine's
+   amidine group (pKa ≈ 11.6) is protonated at physiological pH — which is
+   precisely why it binds the S1 pocket of trypsin. The deposited formula
+   (`C7 H8 N2`, neutral) is *not* what you should simulate. RDKit assigns bond
+   orders from the SMILES template `NC(=[NH2+])c1ccccc1` and adds hydrogens with
+   3D coordinates, giving benzamidinium (+1, 18 atoms).
 3. **The ligand file carries the drawn bonds.** The protonated molecule is
    written both into the PDB (with CONECT records) and as
    `data/benzamidinium.sdf`. The example passes the SDF to
    `build_forcefield_xml(residue_files={"BEN": ...})`, so antechamber reads
    explicit bond orders instead of re-perceiving them from geometry — the
-   aromatic ring and the delocalized amidinium are exactly the kind of
-   chemistry geometry-based perception gets wrong.
+   aromatic ring and the delocalized amidinium are exactly what geometry-based
+   perception gets wrong.
 4. **The structural Ca²⁺ keeps its position, loses its CONECT records.** The
    deposited entry draws four coordination "bonds" from the calcium to protein
-   oxygens. Force fields model ions nonbonded; an ion with bonds can never
-   match an ion template. amber14 then handles Ca²⁺ itself — forcefill never
+   oxygens. Force fields model ions nonbonded, and an ion with bonds can never
+   match an ion template; amber14 then handles Ca²⁺ itself, so forcefill never
    sees it. (Had it stayed bonded, forcefill would have refused it as
-   "covalently bonded to neighbouring residues", which is the correct answer
-   for a mis-drawn ion.)
+   "covalently bonded to neighbouring residues", which is the correct answer for
+   a mis-drawn ion.)
 
    This calcium is also why `clean_pdb` keeps structural metals by default.
    Running it on the prepared structure removes the 62 waters (3425 → 3239
@@ -90,8 +84,8 @@ and every step in it is a decision you will face with your own systems:
    Pass `remove_structural_metals=True` if you really do want it gone — but for
    trypsin you do not: the calcium-binding loop needs it.
 
-With that preparation, `amber14-all.xml + amber14/tip3p.xml` matches
-everything except `BEN`, and the run reduces to:
+With that preparation, `amber14-all.xml + amber14/tip3p.xml` matches everything
+except `BEN`, and the run reduces to:
 
 ```python
 result = build_forcefield_xml(
@@ -102,9 +96,9 @@ result = build_forcefield_xml(
 )
 ```
 
-Expected output: `parameterized: ['BEN']`, nothing skipped, validation OK
-(forcefill builds a System for BEN alone and for the full complex), and a
-large negative energy after minimization for both.
+Expected output: `parameterized: ['BEN']`, nothing skipped, validation OK (a
+System for BEN alone and for the full complex), and a large negative energy after
+minimization for both.
 
 ## Files
 

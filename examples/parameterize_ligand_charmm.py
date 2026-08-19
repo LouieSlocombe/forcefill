@@ -1,21 +1,20 @@
 """Turn a CGenFF stream file into an OpenMM force field, and prove it works.
 
 The CHARMM counterpart of parameterize_ligand_standalone.py. The difference is
-where the parameters come from: there, forcefill derives them (antechamber's
-AM1-BCC, or OpenFF's SMARTS matching). Here it converts parameters you already
-have, because there is no CHARMM equivalent of antechamber to call - CGenFF
-parameters come from https://cgenff.paramchem.org or the licensed cgenff
-program, and both hand you a .str file.
+where the parameters come from: there forcefill derives them, here it converts
+parameters you already have. There is no CHARMM equivalent of antechamber to
+call - CGenFF parameters come from https://cgenff.paramchem.org or the licensed
+cgenff program, both of which hand you a .str file.
 
-What is worth watching in the output:
+Worth watching in the output:
 
   * the net charge is never stated. The RESI block's charges sum to +1 and
-    forcefill reads that, the same way it reads an SDF's M CHG record.
+    forcefill reads that, as it reads an SDF's M CHG record.
   * the generated XML contains a residue template and nothing else. charmm36.xml
     already carries all 412 CGenFF atom types and their parameters, so forcefill
-    names them rather than redefining them. Redefining them is not merely
-    redundant: ParmEd writes epsilon=0 for types it only knows the mass of, and
-    OpenMM lets a later file override an atom type without a word, so the real
+    names them rather than redefining them - which is not merely redundant to
+    do: ParmEd writes epsilon=0 for types it only knows the mass of, and OpenMM
+    lets a later file override an atom type without a word, so the real
     Lennard-Jones parameters would quietly disappear.
   * the two combinations OpenMM could never load are refused by name, up front.
 
@@ -23,9 +22,9 @@ Run from this directory:
 
     python parameterize_ligand_charmm.py
 
-Needs nothing beyond an ordinary forcefill install - no AmberTools, and no
-CHARMM toppar download. data/benzamidinium_cgenff.str and OpenMM's own
-charmm36.xml are the whole input.
+Needs nothing beyond an ordinary forcefill install - no AmberTools, no CHARMM
+toppar download. data/benzamidinium_cgenff.str and OpenMM's own charmm36.xml
+are the whole input.
 """
 
 import logging
@@ -90,9 +89,9 @@ def main():
     forcefield = app.ForceField(*CHARMM_BASE_FORCEFIELD, result.forcefield_xml)
 
     # build_ligand_xml cannot minimize a CHARMM ligand: a stream file records
-    # internal coordinates, so the template's own positions are all zero. The
-    # crystal geometry has to come from somewhere with Cartesian coordinates -
-    # here the SDF, whose atom order the stream file was written to match.
+    # internal coordinates, so the template's positions are all zero. The
+    # geometry has to come from elsewhere - here the SDF, whose atom order the
+    # stream file was written to match.
     molecule = Chem.MolFromMolFile(str(BEN_SDF), removeHs=False)
     conformer = molecule.GetConformer()
     topology = app.Topology()

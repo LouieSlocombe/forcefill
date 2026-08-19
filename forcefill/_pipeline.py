@@ -1,20 +1,15 @@
 """The machinery :func:`~forcefill.build_forcefield_xml` and :func:`~forcefill.build_ligand_xml` share.
 
 The two entry points differ only in where the ligands come from - a PDB's
-unmatched residues, or the caller's own list. Everything between that and the
-finished XML is the same work, and it lives here: preparing a backend, owning
-the working directory, running one residue through to a per-residue XML, and
-combining those into one file.
+unmatched residues, or the caller's own list. Everything after that is the same
+work and lives here: preparing a backend, owning the working directory, running
+one residue through to a per-residue XML, and combining those into one file.
+Each entry point then just resolves its input into ``{name: ResolvedSpec}``,
+calls in here, and assembles a :class:`ParameterizationResult`.
 
-Both entry points are then thin: they resolve their own input into
-``{name: ResolvedSpec}``, call into this module, and assemble a
-:class:`ParameterizationResult`.
-
-Note the import style. AmberTools is reached as ``amber.run_antechamber(...)``
-rather than through ``from .amber import run_antechamber``, deliberately: a
-from-import binds a *copy* at import time, which a test stubbing
-``forcefill.amber`` could never reach. Going through the module keeps the fast
-test suite hermetic no matter which entry point is under test.
+AmberTools is reached as ``amber.run_antechamber(...)`` rather than through a
+from-import, deliberately: a from-import binds a *copy* at import time, which a
+test stubbing ``forcefill.amber`` could never reach.
 """
 
 from __future__ import annotations
@@ -40,10 +35,10 @@ log = logging.getLogger(__name__)
 
 __all__ = ["ParameterizationResult"]
 
-#: 1-4 scaling each backend's output declares. The Amber pair is what ParmEd
-#: writes from ``gaff*.dat`` and what openmmforcefields writes for SMIRNOFF; the
-#: CHARMM pair is what ParmEd writes from a ``CharmmParameterSet``. Compared
-#: against the base force field by :func:`check_backends_match_base`.
+#: 1-4 scaling each backend's output declares, compared against the base force
+#: field by :func:`check_backends_match_base`. The Amber pair is what ParmEd
+#: writes from ``gaff*.dat`` and openmmforcefields for SMIRNOFF; the CHARMM pair
+#: is what ParmEd writes from a ``CharmmParameterSet``.
 _BACKEND_14_SCALES = {
     "gaff": (0.8333333333333334, 0.5),
     "smirnoff": (0.8333333333333334, 0.5),
@@ -57,8 +52,7 @@ class ParameterizationResult:
 
     Also the return type of :func:`~forcefill.build_ligand_xml`, where
     ``skipped``, ``cleaning`` and ``full_minimization`` are always empty: with no
-    input structure there is nothing to skip residues from, clean, or minimize
-    as a whole.
+    input structure there is nothing to skip, clean or minimize as a whole.
     """
 
     #: Path to the combined ffxml covering every parameterized residue
@@ -119,19 +113,17 @@ def check_backends_match_base(specs: Mapping[str, ResolvedSpec], base_forcefield
     """Refuse a combination OpenMM could never load, before anything expensive runs.
 
     Amber-family force fields scale 1-4 interactions by 0.8333/0.5 and CHARMM by
-    1.0/1.0, and OpenMM rejects any ``ForceField`` whose files disagree - within
-    one document as much as across several. So two combinations are impossible
-    rather than merely inadvisable, and both are worth naming here rather than
-    leaving to OpenMM's "Found multiple NonbondedForce tags with different 1-4
-    scales" an hour into a build:
+    1.0/1.0, and OpenMM rejects a ``ForceField`` whose files disagree. Two
+    combinations are therefore impossible rather than inadvisable, and are worth
+    naming here instead of an hour into a build:
 
         * a charmm ligand mixed with a gaff or smirnoff one, whose merged XML
           could not be loaded at all;
-        * a backend whose output does not match the base force field it is being
+        * a backend whose output does not match the base force field it is
           validated against.
 
-    The base force field's convention is read from the loaded force field, so a
-    custom one is checked as accurately as the two named presets.
+    The base convention is read from the loaded force field, so a custom one is
+    checked as accurately as the two presets.
     """
     backends = {spec.backend for spec in specs.values()}
     if not backends:
@@ -183,11 +175,8 @@ def working_directory(
     """Own the intermediate-file directory for one build.
 
     Creates *workdir* (or a fresh temporary directory named *prefix*), yields
-    it, and then either keeps or removes it:
-
-    * on failure it is **always** kept - ``sqm.out`` and the intermediates are
-      the post-mortem, and a pipeline that deletes its own evidence is useless;
-    * on success it is removed only with ``cleanup=True``.
+    it, then keeps it on failure - ``sqm.out`` and the intermediates are the
+    post-mortem - and removes it on success only with ``cleanup=True``.
 
     Refuses up front if ``cleanup`` would delete *output_xml* along with the
     directory, which is otherwise a silently empty result.
@@ -223,16 +212,15 @@ def parameterize_one_residue(
     timeout: float | None = amber.DEFAULT_AMBERTOOLS_TIMEOUT,
     base_forcefield: Sequence[str] = DEFAULT_BASE_FORCEFIELD,
 ) -> ResidueArtifacts:
-    """Run one residue through its backend to a self-contained per-residue XML.
+    """Run one residue through its backend to a per-residue XML.
 
-    For ``gaff`` that is extract -> antechamber -> parmchk2 -> ParmEd; a
-    ``spec.file`` (SDF/MOL2 with explicit bonds) replaces the extraction step.
-    For ``smirnoff`` it is a single call into openmmforcefields, and for
-    ``charmm`` a conversion of the ligand's own CGenFF files - which is the one
-    output that is *not* self-contained, since it names atom types
-    *base_forcefield* defines rather than redefining them. *residue* and
-    *positions* are None in standalone mode, where there is no input structure
-    to extract from.
+    For ``gaff`` that is extract -> antechamber -> parmchk2 -> ParmEd, with a
+    ``spec.file`` (SDF/MOL2 with explicit bonds) replacing the extraction step.
+    For ``smirnoff`` it is one call into openmmforcefields; for ``charmm``, a
+    conversion of the ligand's CGenFF files - the one output that is *not*
+    self-contained, since it names atom types *base_forcefield* defines rather
+    than redefining them. *residue* and *positions* are None in standalone mode,
+    where there is no structure to extract from.
     """
     res_dir.mkdir(parents=True, exist_ok=True)
     name = spec.name

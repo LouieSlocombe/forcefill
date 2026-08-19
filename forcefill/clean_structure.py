@@ -1,44 +1,39 @@
 """Strip crystallographic water, bulk counter-ions and crystallization additives from a structure.
 
-What it removes, by default:
+Removed by default:
 
     * **water** - ``HOH``/``WAT``/``SOL`` and the other model aliases.
     * **bulk counter-ions** - group-1 cations and group-17 anions (``NA``,
-      ``CL``, ``K``, ...). These come from the buffer or from neutralizing the
-      box; they occupy no defined site and you re-add them with
+      ``CL``, ``K``, ...). They come from the buffer or from neutralizing the
+      box, occupy no defined site, and you re-add them with
       ``Modeller.addSolvent(ionicStrength=...)`` anyway.
     * **crystallization additives** - cryoprotectants (``GOL``, ``EDO``,
       ``PEG``), solvents (``DMS``), buffers (``EPE``, ``TRS``), precipitants
       (``SO4``, ``PO4``, ``ACT``) and reductants (``BME``, ``DTT``). Left in
-      place these are exactly what :func:`forcefill.build_forcefield_xml`
-      sends to antechamber - a free-standing hetero molecule looks like a
-      ligand - so a raw crystal structure burns AM1-BCC cycles on glycerol,
-      and since X-ray additives carry no hydrogens the resulting charges are
-      meaningless anyway.
+      place, :func:`forcefill.build_forcefield_xml` sends them to antechamber -
+      a free-standing hetero molecule looks like a ligand - so a raw crystal
+      structure burns AM1-BCC cycles on glycerol, to no purpose: X-ray
+      additives carry no hydrogens, so the charges are meaningless.
 
-What it does **not** remove:
+Kept:
 
-    * **Structural metals** (``CA``, ``ZN``, ``MG``, ``MN``, ``FE``, ...) are
-      kept by default and reported in :attr:`CleaningResult.retained`. Trypsin's
-      Ca2+ (PDB 3PTB, residue ``CA`` 480) rigidifies the calcium-binding loop;
-      deleting it silently changes the science. The asymmetry decides the
-      default: dropping a needed metal is silent and wrong, keeping an unwanted
-      one is visible in the log and reversible with
-      ``remove_structural_metals=True``.
+    * **Structural metals** (``CA``, ``ZN``, ``MG``, ``MN``, ``FE``, ...),
+      reported in :attr:`CleaningResult.retained`. Trypsin's Ca2+ (PDB 3PTB,
+      residue ``CA`` 480) rigidifies the calcium-binding loop; dropping a needed
+      metal is silent and wrong, while keeping an unwanted one is visible in the
+      log and reversible with ``remove_structural_metals=True``.
     * **Anything covalently bonded to a neighbouring residue.** ``Modeller``
       drops the bonds along with the atoms and never says so, leaving the
-      surviving partner with an unsatisfied valence. Those residues are kept
-      and reported instead.
+      partner with an unsatisfied valence.
 
-This module is **subtractive only**. It does not add missing atoms, model
-missing loops, protonate anything, select chains or strip hydrogens. Repairing
-a structure is [PDBFixer's](https://github.com/openmm/pdbfixer) job and
-forcefill deliberately does not duplicate it - clean *after* you repair.
+**Subtractive only**: it never adds missing atoms, models missing loops,
+protonates, selects chains or strips hydrogens. Repairing a structure is
+[PDBFixer's](https://github.com/openmm/pdbfixer) job - clean *after* you repair.
 
-The residue-name tables live in :mod:`forcefill._residue_names`, which also
-documents the het codes deliberately left out (cofactors, glycans, ``BEN``) and
-the borderline ones (``IMD``, ``AZI``, ``SO4``). ``keep=`` and ``extra_remove=``
-are the escape hatches for both directions.
+The residue-name tables are in :mod:`forcefill._residue_names`, which documents
+the het codes deliberately left out (cofactors, glycans, ``BEN``) and the
+borderline ones (``IMD``, ``AZI``, ``SO4``); ``keep=`` and ``extra_remove=`` are
+the escape hatches in both directions.
 
 Example:
     >>> from forcefill import clean_pdb
@@ -126,10 +121,9 @@ class CleaningResult:
 def _linked_residues(topology: app.Topology) -> set[int]:
     """Indices of residues with at least one bond to a *different* residue.
 
-    One pass over the bonds. ``Residue.external_bonds()`` re-scans every bond in
-    the topology per residue and tests membership against a list, which is
-    quadratic in the residue count - 250x slower than this on a 287-residue
-    structure, and far worse on a solvated box.
+    One pass over the bonds. ``Residue.external_bonds()`` re-scans every bond per
+    residue, which is quadratic in the residue count - 250x slower than this on a
+    287-residue structure, and far worse on a solvated box.
     """
     linked: set[int] = set()
     for atom1, atom2 in topology.bonds():
@@ -142,10 +136,10 @@ def _linked_residues(topology: app.Topology) -> set[int]:
 def _ion_mismatch(residue: app.topology.Residue, name: str, n_atoms: int) -> str | None:
     """Why *residue* cannot be treated as the ion its name claims, or None if it can.
 
-    A name alone is never enough to delete something. ``I`` is iodide but also
-    inosine; a residue named ``CA`` holding a carbon is an alpha carbon that
-    lost its residue name somewhere upstream. Both are caught by requiring a
-    single atom carrying the expected element.
+    A name alone is never enough to delete something: ``I`` is iodide but also
+    inosine, and a residue named ``CA`` holding a carbon is an alpha carbon that
+    lost its residue name upstream. Both are caught by requiring a single atom
+    carrying the expected element.
     """
     if n_atoms != 1:
         return (
@@ -273,8 +267,8 @@ def clean_topology(
             (:data:`~forcefill.ADDITIVE_RESIDUES`).
         remove_structural_metals: Also remove
             :data:`~forcefill.STRUCTURAL_METAL_RESIDUES`. Off by default: those
-            metals are frequently catalytic or fold-stabilising, and dropping
-            one silently is a much worse failure than keeping it.
+            metals are often catalytic or fold-stabilising, and dropping one
+            silently is a much worse failure than keeping it.
         keep: Residue names never to remove, whatever category they fall in.
             The escape hatch for an additive that is really your ligand.
         extra_remove: Additional residue names to remove. Rejected with
@@ -356,8 +350,7 @@ def clean_topology(
 
     removed = {name: (categories[name], counts[name]) for name in counts}
     for name in sorted(removed):
-        # Same "N of M copies" shape as the parameterization skip messages: a
-        # name lands in both maps when only some of its copies were removed.
+        # A name lands in both maps when only some of its copies were removed.
         if name in kept_counts:
             log.info(
                 "Removed %d of %d %s (%s); %d kept, see the warning above.",
@@ -398,12 +391,9 @@ def clean_pdb(
 ) -> CleaningResult:
     """Read *pdb_file*, clean it with :func:`clean_topology`, write *output_pdb*.
 
-    The keyword arguments are :func:`clean_topology`'s; see it for what each
-    category covers and why structural metals are kept.
-
-    Only the first MODEL is read and only the primary altLoc is kept - that is
-    OpenMM's PDB reader, and the same is true of
-    :func:`~forcefill.build_forcefield_xml`.
+    The keyword arguments are :func:`clean_topology`'s. Only the first MODEL is
+    read and only the primary altLoc kept - that is OpenMM's PDB reader, and the
+    same is true of :func:`~forcefill.build_forcefield_xml`.
 
     Returns:
         CleaningResult, with ``output_pdb`` set to the path written.

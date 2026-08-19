@@ -1,12 +1,12 @@
 """Merge finished OpenMM force-field XML documents into one file.
 
 The counterpart of :func:`forcefill.amber.assemble_openmm_ffxml`, which merges
-at the ParmEd parameter-set level and so only works for Amber-style input. This
-merges the XML itself, which is what mixing backends needs: a GAFF ffxml and a
-SMIRNOFF ffxml have nothing in common upstream of the XML.
+at the ParmEd parameter-set level and so handles Amber-style input only. Mixing
+backends needs this instead: a GAFF ffxml and a SMIRNOFF ffxml have nothing in
+common upstream of the XML.
 
 Pure ``xml.etree`` - it knows nothing about GAFF, SMIRNOFF or the pipeline, only
-about what OpenMM will accept when it reads the result back.
+what OpenMM will accept when it reads the result back.
 """
 
 from __future__ import annotations
@@ -31,10 +31,10 @@ _SCALE_TOLERANCE = 1e-5
 def _attributes_compatible(a: Mapping[str, str], b: Mapping[str, str]) -> bool:
     """True when two force sections can be folded into one element.
 
-    Numeric attributes are compared with a tolerance, because the same constant
-    is written to different precision by different producers: Amber's 1-4
-    Coulomb scale comes out of ParmEd as ``0.8333333333333334`` and out of
-    openmmforcefields as ``0.8333333333``. Anything else must match exactly.
+    Numeric attributes are compared with a tolerance: the same constant is
+    written to different precision by different producers, e.g. Amber's 1-4
+    Coulomb scale is ``0.8333333333333334`` from ParmEd and ``0.8333333333``
+    from openmmforcefields. Anything else must match exactly.
     """
     if set(a) != set(b):
         return False
@@ -98,11 +98,9 @@ def _extend_section(section: ET.Element, incoming: ET.Element) -> None:
     """Append *incoming*'s children to *section*, dropping exact duplicates of leaf elements.
 
     Every ffxml this merges declares ``<UseAttributeFromResidue name="charge"/>``
-    - charges live on the residue templates, not the atom types - and OpenMM
-    rejects a second copy of that declaration outright, because it removes the
-    named attribute from the expected list and then cannot find it again. An
-    identical leaf element carries no information the first copy did not, so
-    dropping it is safe for every section, not just that one.
+    and OpenMM rejects a second copy outright: it removes the named attribute
+    from the expected list and then cannot find it again. An identical leaf
+    carries nothing the first copy did not, so dropping it is safe generally.
     """
     present = {key for child in section if (key := _element_key(child)) is not None}
     for child in incoming:

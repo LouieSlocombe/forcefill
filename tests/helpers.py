@@ -56,9 +56,9 @@ def methanol_positions(xyz=METHANOL_XYZ):
 
 #: 2-chloroethanol, the charmm-backend test ligand, matching
 #: tests/data/chloroethanol_cgenff.str (angstrom, MMFF-optimized). Methanol will
-#: not do here: charmm36.xml carries 814 residue templates including every CGenFF
+#: not do: charmm36.xml carries 814 residue templates including every CGenFF
 #: model compound, so it is matched by the base force field and never reaches a
-#: backend at all. This one is not.
+#: backend. This one is not.
 CHLOROETHANOL_ATOMS = [
     ("CL1", element.chlorine),
     ("C1", element.carbon),
