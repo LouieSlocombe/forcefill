@@ -5,10 +5,13 @@ conftest.py, which installs the committed fixtures instead of running anything.
 The real-executable version lives in test_integration.py.
 """
 
+from __future__ import annotations
+
 import logging
 import math
 import shutil
 from pathlib import Path
+from typing import Any, NoReturn
 
 import pytest
 
@@ -27,7 +30,7 @@ from tests.helpers import (
 )
 
 
-def test_public_api_resolves():
+def test_public_api_resolves() -> None:
     for name in forcefill.__all__:
         assert hasattr(forcefill, name), name
     modules = (_pipeline, _spec, amber, checks, clean_structure, ligand, merge, structure, topology)
@@ -43,7 +46,7 @@ def test_public_api_resolves():
     assert isinstance(forcefill.__version__, str)
 
 
-def test_parameterization_result_defaults():
+def test_parameterization_result_defaults() -> None:
     result = forcefill.ParameterizationResult(forcefield_xml=None)
     assert result.residue_xmls == {}
     assert result.parameterized == []
@@ -54,7 +57,7 @@ def test_parameterization_result_defaults():
     assert result.cleaning is None
 
 
-def test_bad_options_rejected_before_the_file_is_opened(tmp_path):
+def test_bad_options_rejected_before_the_file_is_opened(tmp_path: Path) -> None:
     # Each raises on the option, not on the absent PDB, so a typo costs nothing.
     with pytest.raises(ValueError, match="atom_type"):
         forcefill.build_forcefield_xml(tmp_path / "absent.pdb", atom_type="gaff3")
@@ -65,7 +68,7 @@ def test_bad_options_rejected_before_the_file_is_opened(tmp_path):
 # -- orchestration (AmberTools faked) --------------------------------------
 
 
-def test_orchestration_end_to_end_with_fakes(fake_ambertools, tmp_path):
+def test_orchestration_end_to_end_with_fakes(fake_ambertools: dict[str, list[dict[str, Any]]], tmp_path: Path) -> None:
     pdb = write_methanol_pdb(tmp_path / "in.pdb")
     wd = tmp_path / "wd"
     result = forcefill.build_forcefield_xml(
@@ -101,7 +104,9 @@ def test_orchestration_end_to_end_with_fakes(fake_ambertools, tmp_path):
     assert chk["timeout"] == 123
 
 
-def test_orchestration_residue_files_bypass_extraction(fake_ambertools, tmp_path):
+def test_orchestration_residue_files_bypass_extraction(
+    fake_ambertools: dict[str, list[dict[str, Any]]], tmp_path: Path
+) -> None:
     pdb = write_methanol_pdb(tmp_path / "in.pdb")
     sdf = write_methanol_sdf(tmp_path / "lig.sdf")
     wd = tmp_path / "wd"
@@ -114,7 +119,7 @@ def test_orchestration_residue_files_bypass_extraction(fake_ambertools, tmp_path
     assert not (wd / "LIG" / "LIG.pdb").exists()  # extraction skipped
 
 
-def _write_charged_methanol_sdf(path):
+def _write_charged_methanol_sdf(path: Path) -> Path:
     """Methanol's atoms with an ``M  CHG`` record bolted on.
 
     Deliberately synthetic: real methoxide would be one hydrogen short, which the
@@ -127,7 +132,9 @@ def _write_charged_methanol_sdf(path):
     return path
 
 
-def test_orchestration_ligands_spec_replaces_the_legacy_mappings(fake_ambertools, tmp_path):
+def test_orchestration_ligands_spec_replaces_the_legacy_mappings(
+    fake_ambertools: dict[str, list[dict[str, Any]]], tmp_path: Path
+) -> None:
     pdb = write_methanol_pdb(tmp_path / "in.pdb")
     sdf = write_methanol_sdf(tmp_path / "lig.sdf")
     forcefill.build_forcefield_xml(
@@ -144,7 +151,9 @@ def test_orchestration_ligands_spec_replaces_the_legacy_mappings(fake_ambertools
     assert ante["charge_method"] == "gas"
 
 
-def test_orchestration_infers_the_net_charge_from_the_ligand_file(fake_ambertools, tmp_path, caplog):
+def test_orchestration_infers_the_net_charge_from_the_ligand_file(
+    fake_ambertools: dict[str, list[dict[str, Any]]], tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
     # The behaviour change: a supplied file that states a formal charge is no
     # longer silently treated as neutral.
     pdb = write_methanol_pdb(tmp_path / "in.pdb")
@@ -162,7 +171,9 @@ def test_orchestration_infers_the_net_charge_from_the_ligand_file(fake_ambertool
     assert "Using net charge -1 for LIG" in caplog.text
 
 
-def test_orchestration_explicit_net_charge_wins_over_a_silent_file(fake_ambertools, tmp_path):
+def test_orchestration_explicit_net_charge_wins_over_a_silent_file(
+    fake_ambertools: dict[str, list[dict[str, Any]]], tmp_path: Path
+) -> None:
     # A PDB states no formal charge, so the caller's value is used unchallenged.
     pdb = write_methanol_pdb(tmp_path / "in.pdb")
     forcefill.build_forcefield_xml(
@@ -171,7 +182,9 @@ def test_orchestration_explicit_net_charge_wins_over_a_silent_file(fake_ambertoo
     assert fake_ambertools["antechamber"][0]["net_charge"] == -1
 
 
-def test_orchestration_mismatched_residue_file_fails_before_antechamber(fake_ambertools, tmp_path):
+def test_orchestration_mismatched_residue_file_fails_before_antechamber(
+    fake_ambertools: dict[str, list[dict[str, Any]]], tmp_path: Path
+) -> None:
     # The point of the preflight: this used to surface only after antechamber,
     # as an opaque OpenMM template-match error.
     pdb = write_methanol_pdb(tmp_path / "in.pdb")
@@ -183,7 +196,9 @@ def test_orchestration_mismatched_residue_file_fails_before_antechamber(fake_amb
     assert fake_ambertools["antechamber"] == []
 
 
-def test_orchestration_strict_false_downgrades_the_mismatch(fake_ambertools, tmp_path, caplog):
+def test_orchestration_strict_false_downgrades_the_mismatch(
+    fake_ambertools: dict[str, list[dict[str, Any]]], tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
     pdb = write_methanol_pdb(tmp_path / "in.pdb")
     ben = Path(__file__).parent.parent / "examples" / "data" / "benzamidinium.sdf"
     with caplog.at_level(logging.WARNING):
@@ -200,13 +215,13 @@ def test_orchestration_strict_false_downgrades_the_mismatch(fake_ambertools, tmp
     assert len(fake_ambertools["antechamber"]) == 1
 
 
-def test_orchestration_rejects_an_unknown_backend(tmp_path):
+def test_orchestration_rejects_an_unknown_backend(tmp_path: Path) -> None:
     pdb = write_methanol_pdb(tmp_path / "in.pdb")
     with pytest.raises(ValueError, match="backend"):
         forcefill.build_forcefield_xml(pdb, tmp_path / "extras.xml", backend="amoeba")
 
 
-def test_orchestration_smirnoff_without_a_source_is_refused(tmp_path):
+def test_orchestration_smirnoff_without_a_source_is_refused(tmp_path: Path) -> None:
     # Refused before any tool runs: a PDB residue has no bond orders for SMARTS
     # matching to work on.
     pdb = write_methanol_pdb(tmp_path / "in.pdb")
@@ -216,7 +231,7 @@ def test_orchestration_smirnoff_without_a_source_is_refused(tmp_path):
         )
 
 
-def test_orchestration_minimize(fake_ambertools, tmp_path):
+def test_orchestration_minimize(fake_ambertools: dict[str, list[dict[str, Any]]], tmp_path: Path) -> None:
     pdb = write_methanol_pdb(tmp_path / "in.pdb")
     result = forcefill.build_forcefield_xml(
         pdb, tmp_path / "extras.xml", base_forcefield=(), workdir=tmp_path / "wd", minimize=True
@@ -231,7 +246,9 @@ def test_orchestration_minimize(fake_ambertools, tmp_path):
     assert result.full_minimization.n_atoms == 6
 
 
-def test_orchestration_minimize_without_validate(fake_ambertools, tmp_path):
+def test_orchestration_minimize_without_validate(
+    fake_ambertools: dict[str, list[dict[str, Any]]], tmp_path: Path
+) -> None:
     # minimize subsumes validate: it has to build the System to get an energy.
     pdb = write_methanol_pdb(tmp_path / "in.pdb")
     result = forcefill.build_forcefield_xml(
@@ -244,7 +261,9 @@ def test_orchestration_minimize_without_validate(fake_ambertools, tmp_path):
         shutil.rmtree(result.workdir, ignore_errors=True)
 
 
-def test_orchestration_minimize_skips_full_structure_when_residue_skipped(fake_ambertools, tmp_path, caplog):
+def test_orchestration_minimize_skips_full_structure_when_residue_skipped(
+    fake_ambertools: dict[str, list[dict[str, Any]]], tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
     pdb = write_methanol_pdb(tmp_path / "in.pdb", broken_gly=True)
     with caplog.at_level(logging.WARNING):
         result = forcefill.build_forcefield_xml(
@@ -258,7 +277,9 @@ def test_orchestration_minimize_skips_full_structure_when_residue_skipped(fake_a
     assert "Skipping the full-structure checks" in caplog.text
 
 
-def test_orchestration_cleanup_removes_workdir(fake_ambertools, tmp_path):
+def test_orchestration_cleanup_removes_workdir(
+    fake_ambertools: dict[str, list[dict[str, Any]]], tmp_path: Path
+) -> None:
     pdb = write_methanol_pdb(tmp_path / "in.pdb")
     wd = tmp_path / "wd"
     result = forcefill.build_forcefield_xml(pdb, tmp_path / "extras.xml", base_forcefield=(), workdir=wd, cleanup=True)
@@ -268,15 +289,22 @@ def test_orchestration_cleanup_removes_workdir(fake_ambertools, tmp_path):
     assert Path(result.forcefield_xml).is_file()
 
 
-def test_orchestration_cleanup_refuses_output_inside_the_workdir(fake_ambertools, tmp_path):
+def test_orchestration_cleanup_refuses_output_inside_the_workdir(
+    fake_ambertools: dict[str, list[dict[str, Any]]], tmp_path: Path
+) -> None:
     pdb = write_methanol_pdb(tmp_path / "in.pdb")
     wd = tmp_path / "wd"
     with pytest.raises(ValueError, match="inside the working directory"):
         forcefill.build_forcefield_xml(pdb, wd / "extras.xml", base_forcefield=(), workdir=wd, cleanup=True)
 
 
-def test_orchestration_failure_preserves_workdir(fake_ambertools, monkeypatch, tmp_path, caplog):
-    def boom(*args, **kwargs):
+def test_orchestration_failure_preserves_workdir(
+    fake_ambertools: dict[str, list[dict[str, Any]]],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    def boom(*args: object, **kwargs: object) -> NoReturn:
         raise RuntimeError("antechamber exploded")
 
     monkeypatch.setattr(amber, "run_antechamber", boom)
@@ -288,7 +316,9 @@ def test_orchestration_failure_preserves_workdir(fake_ambertools, monkeypatch, t
     assert "kept for debugging" in caplog.text
 
 
-def test_orchestration_default_workdir_reported(fake_ambertools, tmp_path):
+def test_orchestration_default_workdir_reported(
+    fake_ambertools: dict[str, list[dict[str, Any]]], tmp_path: Path
+) -> None:
     pdb = write_methanol_pdb(tmp_path / "in.pdb")
     result = forcefill.build_forcefield_xml(pdb, tmp_path / "extras.xml", base_forcefield=(), validate=False)
     try:
@@ -299,7 +329,7 @@ def test_orchestration_default_workdir_reported(fake_ambertools, tmp_path):
         shutil.rmtree(result.workdir, ignore_errors=True)
 
 
-def test_nothing_to_parameterize_short_circuits(tmp_path):
+def test_nothing_to_parameterize_short_circuits(tmp_path: Path) -> None:
     pdb = write_water_pdb(tmp_path / "w.pdb")
     result = forcefill.build_forcefield_xml(pdb, tmp_path / "extras.xml", base_forcefield=("amber14/tip3p.xml",))
     assert result.forcefield_xml is None
@@ -307,7 +337,7 @@ def test_nothing_to_parameterize_short_circuits(tmp_path):
     assert not (tmp_path / "extras.xml").exists()
 
 
-def test_everything_skipped_raises(tmp_path):
+def test_everything_skipped_raises(tmp_path: Path) -> None:
     pdb = write_broken_gly_pdb(tmp_path / "g.pdb")
     with pytest.raises(RuntimeError, match="none can be auto-parameterized"):
         forcefill.build_forcefield_xml(pdb, tmp_path / "extras.xml", base_forcefield=())
@@ -316,7 +346,9 @@ def test_everything_skipped_raises(tmp_path):
 # -- clean_structure=True --------------------------------------------------
 
 
-def test_clean_structure_removes_an_additive_before_parameterizing(fake_ambertools, tmp_path):
+def test_clean_structure_removes_an_additive_before_parameterizing(
+    fake_ambertools: dict[str, list[dict[str, Any]]], tmp_path: Path
+) -> None:
     # A free-standing glycerol is indistinguishable from a ligand, so without
     # cleaning it goes to antechamber - minutes of AM1-BCC on a cryoprotectant,
     # for meaningless charges, since X-ray additives carry no hydrogens.
@@ -339,7 +371,9 @@ def test_clean_structure_removes_an_additive_before_parameterizing(fake_ambertoo
     assert [c["residue"] for c in fake_ambertools["antechamber"]] == ["GOL", "LIG", "LIG"]
 
 
-def test_clean_structure_lets_the_full_checks_run(fake_ambertools, tmp_path):
+def test_clean_structure_lets_the_full_checks_run(
+    fake_ambertools: dict[str, list[dict[str, Any]]], tmp_path: Path
+) -> None:
     # Crystallographic water that fails to match lands in `skipped`, and a
     # non-empty `skipped` suppresses the whole-structure validate/minimize.
     pdb = write_ligand_and_water_pdb(tmp_path / "in.pdb")
@@ -365,7 +399,7 @@ def test_clean_structure_lets_the_full_checks_run(fake_ambertools, tmp_path):
     assert clean.cleaning.n_atoms_after == 6
 
 
-def test_clean_structure_defaults_off(fake_ambertools, tmp_path):
+def test_clean_structure_defaults_off(fake_ambertools: dict[str, list[dict[str, Any]]], tmp_path: Path) -> None:
     # Deleting atoms is never something the pipeline does unasked.
     pdb = write_ligand_and_water_pdb(tmp_path / "in.pdb")
     result = forcefill.build_forcefield_xml(pdb, tmp_path / "extras.xml", base_forcefield=(), workdir=tmp_path / "wd")
@@ -373,7 +407,7 @@ def test_clean_structure_defaults_off(fake_ambertools, tmp_path):
     assert "HOH" in result.skipped
 
 
-def test_clean_structure_is_reported_on_the_early_return(tmp_path):
+def test_clean_structure_is_reported_on_the_early_return(tmp_path: Path) -> None:
     # A solvent-only PDB cleans down to nothing, so there is no XML to build -
     # but the caller still needs to hear what happened.
     pdb = write_water_pdb(tmp_path / "w.pdb")
@@ -384,7 +418,9 @@ def test_clean_structure_is_reported_on_the_early_return(tmp_path):
     assert result.cleaning.n_atoms_after == 0
 
 
-def test_clean_structure_explains_an_override_aimed_at_a_removed_residue(fake_ambertools, tmp_path, caplog):
+def test_clean_structure_explains_an_override_aimed_at_a_removed_residue(
+    fake_ambertools: dict[str, list[dict[str, Any]]], tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
     pdb = write_ligand_and_glycerol_pdb(tmp_path / "in.pdb")
     with caplog.at_level(logging.WARNING):
         forcefill.build_forcefield_xml(

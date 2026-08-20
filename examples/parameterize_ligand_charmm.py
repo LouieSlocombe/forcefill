@@ -27,6 +27,8 @@ toppar download. data/benzamidinium_cgenff.str and OpenMM's own charmm36.xml
 are the whole input.
 """
 
+from __future__ import annotations
+
 import logging
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -35,14 +37,14 @@ import openmm
 from openmm import app, unit
 from rdkit import Chem
 
-from forcefill import CHARMM_BASE_FORCEFIELD, LigandSpec, build_ligand_xml
+from forcefill import CHARMM_BASE_FORCEFIELD, LigandSpec, ParameterizationResult, build_ligand_xml
 
 HERE = Path(__file__).parent
 BEN_STR = HERE / "data" / "benzamidinium_cgenff.str"
 BEN_SDF = HERE / "data" / "benzamidinium.sdf"
 
 
-def show_refusals():
+def show_refusals() -> None:
     """The two things a CHARMM user hits first, and what forcefill says about them."""
     print("\n--- what is refused, and why ---")
     attempts = {
@@ -63,7 +65,7 @@ def show_refusals():
             print(f"{label}:\n  {str(exc).splitlines()[0]}")
 
 
-def main():
+def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 
     print("--- converting the stream file ---")
@@ -125,7 +127,7 @@ def main():
     )
 
 
-def _stream_atom_names(result):
+def _stream_atom_names(result: ParameterizationResult) -> list[str | None]:
     """Atom names from the generated template, in order - the order the SDF is in."""
     root = ET.parse(result.forcefield_xml).getroot()
     return [atom.get("name") for atom in root.findall("./Residues/Residue/Atom")]

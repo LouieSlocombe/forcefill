@@ -4,6 +4,8 @@ These run antechamber/parmchk2 for real and are skipped when AmberTools
 (or its GAFF data files) is not available.
 """
 
+from __future__ import annotations
+
 import math
 import shutil
 import xml.etree.ElementTree as ET
@@ -20,7 +22,7 @@ from forcefill import build_forcefield_xml, build_ligand_xml, locate_gaff_dat
 from tests.helpers import write_methanol_pdb, write_methanol_sdf
 
 
-def _ambertools_available():
+def _ambertools_available() -> bool:
     if shutil.which("antechamber") is None or shutil.which("parmchk2") is None:
         return False
     try:
@@ -36,7 +38,7 @@ pytestmark = [
 ]
 
 
-def test_methanol_end_to_end(tmp_path):
+def test_methanol_end_to_end(tmp_path: Path) -> None:
     pdb = write_methanol_pdb(tmp_path / "in.pdb")
     result = build_forcefield_xml(pdb, tmp_path / "extras.xml", workdir=tmp_path / "wd")
     assert result.parameterized == ["LIG"]
@@ -51,7 +53,7 @@ def test_methanol_end_to_end(tmp_path):
     ff.createSystem(app.PDBFile(str(pdb)).topology)
 
 
-def test_relative_workdir_and_output(tmp_path, monkeypatch):
+def test_relative_workdir_and_output(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     # Regression: relative paths used to break antechamber, whose cwd is
     # changed to the per-residue directory.
     monkeypatch.chdir(tmp_path)
@@ -62,7 +64,7 @@ def test_relative_workdir_and_output(tmp_path, monkeypatch):
     assert (tmp_path / "extras.xml").is_file()
 
 
-def test_methanol_from_sdf_end_to_end(tmp_path):
+def test_methanol_from_sdf_end_to_end(tmp_path: Path) -> None:
     # residue_files: antechamber reads the drawn SDF instead of the extracted PDB.
     pdb = write_methanol_pdb(tmp_path / "in.pdb")
     sdf = write_methanol_sdf(tmp_path / "lig.sdf")
@@ -74,7 +76,7 @@ def test_methanol_from_sdf_end_to_end(tmp_path):
     ff.createSystem(app.PDBFile(str(pdb)).topology)
 
 
-def test_cleanup_removes_workdir_on_success(tmp_path):
+def test_cleanup_removes_workdir_on_success(tmp_path: Path) -> None:
     pdb = write_methanol_pdb(tmp_path / "in.pdb")
     result = build_forcefield_xml(pdb, tmp_path / "extras.xml", workdir=tmp_path / "wd", cleanup=True)
     assert result.workdir is None
@@ -83,13 +85,13 @@ def test_cleanup_removes_workdir_on_success(tmp_path):
     assert Path(result.forcefield_xml).is_file()
 
 
-def test_cleanup_refuses_output_inside_workdir(tmp_path):
+def test_cleanup_refuses_output_inside_workdir(tmp_path: Path) -> None:
     pdb = write_methanol_pdb(tmp_path / "in.pdb")
     with pytest.raises(ValueError, match="inside the working directory"):
         build_forcefield_xml(pdb, tmp_path / "wd" / "extras.xml", workdir=tmp_path / "wd", cleanup=True)
 
 
-def test_minimize_end_to_end(tmp_path):
+def test_minimize_end_to_end(tmp_path: Path) -> None:
     # The full path with real AmberTools parameters: antechamber charges and
     # parmchk2 constants have to produce a finite energy that a minimizer can
     # lower, not merely a System that builds.
@@ -105,7 +107,7 @@ def test_minimize_end_to_end(tmp_path):
     assert math.isfinite(result.full_minimization.final_energy)
 
 
-def test_standalone_ligand_end_to_end(tmp_path):
+def test_standalone_ligand_end_to_end(tmp_path: Path) -> None:
     # No PDB anywhere: the ligand file is the whole input, and the mol2
     # antechamber writes supplies the topology the checks run against.
     sdf = write_methanol_sdf(tmp_path / "lig.sdf")
@@ -122,7 +124,7 @@ def test_standalone_ligand_end_to_end(tmp_path):
     ff.createSystem(app.PDBFile(str(write_methanol_pdb(tmp_path / "in.pdb"))).topology)
 
 
-def test_standalone_ligand_infers_the_net_charge(tmp_path):
+def test_standalone_ligand_infers_the_net_charge(tmp_path: Path) -> None:
     # Real antechamber this time: the +1 read from the SDF is what -nc receives,
     # so the charges must sum to +1 rather than to 0.
     ben = Path(__file__).parent.parent / "examples" / "data" / "benzamidinium.sdf"
@@ -137,7 +139,7 @@ def test_standalone_ligand_infers_the_net_charge(tmp_path):
     assert sum(charges) == pytest.approx(1.0, abs=0.01)
 
 
-def test_skipped_residue_still_returns_result(tmp_path):
+def test_skipped_residue_still_returns_result(tmp_path: Path) -> None:
     # Regression: a skipped residue used to make default validation raise
     # after all the work was done, losing the result.
     pdb = write_methanol_pdb(tmp_path / "in.pdb", broken_gly=True)

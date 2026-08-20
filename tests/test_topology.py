@@ -3,7 +3,10 @@
 Hermetic: no AmberTools executables and no PDB fixtures are required.
 """
 
+from __future__ import annotations
+
 import logging
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -19,35 +22,35 @@ from tests.helpers import METHANOL_ATOMS, METHANOL_XYZ, methanol_positions, meth
 class StubResidue:
     """Duck-types the Residue surface ``_classify_unmatched`` uses: ``.name``, ``.atoms()``, ``.external_bonds()``."""
 
-    def __init__(self, name, n_atoms=2, external_bonds=0):
+    def __init__(self, name: str, n_atoms: int = 2, external_bonds: int = 0) -> None:
         self.name = name
         self._atoms = [object() for _ in range(n_atoms)]
         self._external = [object() for _ in range(external_bonds)]
 
-    def atoms(self):
+    def atoms(self) -> Iterator[object]:
         return iter(self._atoms)
 
-    def external_bonds(self):
+    def external_bonds(self) -> Iterator[object]:
         return iter(self._external)
 
 
 # -- classification --------------------------------------------------------
 
 
-def test_classify_ligand_is_parameterized():
+def test_classify_ligand_is_parameterized() -> None:
     to_param, skipped = topology._classify_unmatched([StubResidue("LIG", n_atoms=10)])
     assert list(to_param) == ["LIG"]
     assert skipped == {}
 
 
-def test_classify_standard_residue_is_skipped():
+def test_classify_standard_residue_is_skipped() -> None:
     to_param, skipped = topology._classify_unmatched([StubResidue("ALA", n_atoms=5)])
     assert to_param == {}
     assert "repair the structure" in skipped["ALA"]
 
 
 @pytest.mark.parametrize("name", ["HSD", "HSE", "HSP", "ADE", "CYT", "GUA", "THY", "URA", "TIP3"])
-def test_classify_charmm_spellings_are_standard(name):
+def test_classify_charmm_spellings_are_standard(name: str) -> None:
     # A structure prepared for CHARMM names histidine HSD/HSE/HSP and the bases
     # ADE/CYT/GUA/THY/URA. Without those, an incomplete protein residue would be
     # sent to a backend instead of reported as needing repair.
@@ -56,19 +59,19 @@ def test_classify_charmm_spellings_are_standard(name):
     assert "repair the structure" in skipped[name]
 
 
-def test_classify_monatomic_is_skipped():
+def test_classify_monatomic_is_skipped() -> None:
     to_param, skipped = topology._classify_unmatched([StubResidue("ZN", n_atoms=1)])
     assert to_param == {}
     assert "monatomic" in skipped["ZN"]
 
 
-def test_classify_covalently_linked_is_skipped():
+def test_classify_covalently_linked_is_skipped() -> None:
     to_param, skipped = topology._classify_unmatched([StubResidue("PTM", n_atoms=8, external_bonds=1)])
     assert to_param == {}
     assert "covalently bonded" in skipped["PTM"]
 
 
-def test_classify_picks_most_complete_copy():
+def test_classify_picks_most_complete_copy() -> None:
     small = StubResidue("LIG", n_atoms=4)
     big = StubResidue("LIG", n_atoms=9)
     to_param, skipped = topology._classify_unmatched([small, big])
@@ -76,7 +79,7 @@ def test_classify_picks_most_complete_copy():
     assert skipped == {}
 
 
-def test_classify_skips_if_any_copy_linked():
+def test_classify_skips_if_any_copy_linked() -> None:
     # The representative (most atoms) is free-standing, but another copy is
     # covalently linked: the name must still be skipped.
     free_big = StubResidue("SUG", n_atoms=12)
@@ -87,7 +90,7 @@ def test_classify_skips_if_any_copy_linked():
     assert "1 of 2 copies" in skipped["SUG"]
 
 
-def test_warn_unused_overrides(caplog):
+def test_warn_unused_overrides(caplog: pytest.LogCaptureFixture) -> None:
     to_param = {"LIG": StubResidue("LIG")}
     skipped = {"ZN": "monatomic species - ..."}
     with caplog.at_level(logging.WARNING):
@@ -109,7 +112,7 @@ def test_warn_unused_overrides(caplog):
 # -- extraction ------------------------------------------------------------
 
 
-def test_extract_residue_to_pdb_roundtrip(tmp_path):
+def test_extract_residue_to_pdb_roundtrip(tmp_path: Path) -> None:
     residue = methanol_residue()
     out = tmp_path / "LIG.pdb"
     path = topology.extract_residue_to_pdb(methanol_positions(), residue, out)
@@ -125,7 +128,7 @@ def test_extract_residue_to_pdb_roundtrip(tmp_path):
         assert max(abs(x - b.x), abs(y - b.y), abs(z - b.z)) < 1e-2
 
 
-def test_extract_residue_warns_on_missing_element(tmp_path, caplog):
+def test_extract_residue_warns_on_missing_element(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
     top = app.Topology()
     chain = top.addChain("A")
     res = top.addResidue("UNK", chain)
@@ -136,5 +139,5 @@ def test_extract_residue_warns_on_missing_element(tmp_path, caplog):
     assert "no element" in caplog.text
 
 
-def test_describe_topology_names_a_lone_residue():
+def test_describe_topology_names_a_lone_residue() -> None:
     assert topology._describe_topology(methanol_residue().chain.topology) == "residue LIG (6 atoms)"

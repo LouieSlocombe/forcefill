@@ -5,6 +5,9 @@ through the text readers: RDKit cannot parse some of what forcefill is handed
 (the GAFF-typed mol2 antechamber writes, above all), and the text path covers it.
 """
 
+from __future__ import annotations
+
+from collections.abc import Sequence
 from pathlib import Path
 
 import pytest
@@ -46,7 +49,7 @@ BOTH_READERS = pytest.mark.parametrize("prefer_rdkit", [True, False], ids=["rdki
 
 
 @BOTH_READERS
-def test_reads_methanol_sdf(tmp_path, prefer_rdkit):
+def test_reads_methanol_sdf(tmp_path: Path, prefer_rdkit: bool) -> None:
     info = inspect_ligand_file(write_methanol_sdf(tmp_path / "lig.sdf"), prefer_rdkit=prefer_rdkit)
     assert info.formula == "CH4O"
     assert info.n_atoms == 6
@@ -56,7 +59,7 @@ def test_reads_methanol_sdf(tmp_path, prefer_rdkit):
 
 
 @BOTH_READERS
-def test_reads_the_antechamber_mol2(prefer_rdkit):
+def test_reads_the_antechamber_mol2(prefer_rdkit: bool) -> None:
     # GAFF atom types (c3, oh, ho) are not SYBYL types and are ambiguous with
     # element symbols - ParmEd resolves them, a column parser cannot.
     info = inspect_ligand_file(DATA / "methanol.mol2", prefer_rdkit=prefer_rdkit)
@@ -65,7 +68,7 @@ def test_reads_the_antechamber_mol2(prefer_rdkit):
 
 
 @BOTH_READERS
-def test_reads_the_charged_example_ligand(prefer_rdkit):
+def test_reads_the_charged_example_ligand(prefer_rdkit: bool) -> None:
     # The whole point of the inference: this file already says +1.
     info = inspect_ligand_file(BENZAMIDINIUM, prefer_rdkit=prefer_rdkit)
     assert info.formula == "C7H9N2"
@@ -74,7 +77,7 @@ def test_reads_the_charged_example_ligand(prefer_rdkit):
 
 
 @BOTH_READERS
-def test_pdb_never_reports_a_confident_charge(tmp_path, prefer_rdkit):
+def test_pdb_never_reports_a_confident_charge(tmp_path: Path, prefer_rdkit: bool) -> None:
     # A PDB carries no bond orders, so any formal charge read from one is a
     # guess. Reporting 0 as fact is how a charged ligand is silently
     # parameterized as neutral.
@@ -83,7 +86,7 @@ def test_pdb_never_reports_a_confident_charge(tmp_path, prefer_rdkit):
     assert info.formal_charge is None
 
 
-def test_reads_sdf_v3000(tmp_path):
+def test_reads_sdf_v3000(tmp_path: Path) -> None:
     sdf = tmp_path / "v3000.sdf"
     sdf.write_text(
         "water\n  forcefill\n\n"
@@ -108,7 +111,7 @@ def test_reads_sdf_v3000(tmp_path):
     assert info.formal_charge == -1
 
 
-def test_v2000_legacy_charge_codes(tmp_path):
+def test_v2000_legacy_charge_codes(tmp_path: Path) -> None:
     # Pre-M-CHG files put the charge in atom-block column 37-39, where code 3 is +1.
     sdf = tmp_path / "legacy.sdf"
     sdf.write_text(
@@ -120,19 +123,19 @@ def test_v2000_legacy_charge_codes(tmp_path):
     assert inspect_ligand_file(sdf, prefer_rdkit=False).formal_charge == 1
 
 
-def test_unknown_suffix_is_rejected(tmp_path):
+def test_unknown_suffix_is_rejected(tmp_path: Path) -> None:
     bad = tmp_path / "lig.xyz"
     bad.write_text("1\n\nC 0 0 0\n")
     with pytest.raises(ValueError, match="unknown ligand file type"):
         inspect_ligand_file(bad)
 
 
-def test_missing_file_is_rejected(tmp_path):
+def test_missing_file_is_rejected(tmp_path: Path) -> None:
     with pytest.raises(FileNotFoundError):
         inspect_ligand_file(tmp_path / "nope.sdf")
 
 
-def test_malformed_sdf_is_rejected(tmp_path):
+def test_malformed_sdf_is_rejected(tmp_path: Path) -> None:
     bad = tmp_path / "bad.sdf"
     bad.write_text("title\nprog\ncomment\nnot a counts line\n")
     with pytest.raises(ValueError, match="counts line"):
@@ -144,15 +147,15 @@ def test_malformed_sdf_is_rejected(tmp_path):
 # --------------------------------------------------------------------------
 
 
-def _methanol_residue(tmp_path):
+def _methanol_residue(tmp_path: Path) -> app.topology.Residue:
     return next(app.PDBFile(str(write_methanol_pdb(tmp_path / "in.pdb"))).topology.residues())
 
 
-def test_matching_file_passes(tmp_path):
+def test_matching_file_passes(tmp_path: Path) -> None:
     check_matches_residue(inspect_ligand_file(DATA / "methanol.mol2"), _methanol_residue(tmp_path), "LIG")
 
 
-def test_mismatched_file_names_the_difference(tmp_path):
+def test_mismatched_file_names_the_difference(tmp_path: Path) -> None:
     with pytest.raises(ValueError) as exc:
         check_matches_residue(inspect_ligand_file(BENZAMIDINIUM), _methanol_residue(tmp_path), "LIG")
     message = str(exc.value)
@@ -161,13 +164,13 @@ def test_mismatched_file_names_the_difference(tmp_path):
     assert "C: file 7 vs PDB 1" in message
 
 
-def test_mismatch_can_be_downgraded_to_a_warning(tmp_path, caplog):
+def test_mismatch_can_be_downgraded_to_a_warning(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
     with caplog.at_level("WARNING"):
         check_matches_residue(inspect_ligand_file(BENZAMIDINIUM), _methanol_residue(tmp_path), "LIG", strict=False)
     assert "not the same molecule" in caplog.text
 
 
-def test_residue_with_no_elements_is_reported_not_compared(tmp_path, caplog):
+def test_residue_with_no_elements_is_reported_not_compared(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
     top = app.Topology()
     residue = top.addResidue("LIG", top.addChain("A"))
     top.addAtom("C1", None, residue)
@@ -176,7 +179,7 @@ def test_residue_with_no_elements_is_reported_not_compared(tmp_path, caplog):
     assert "no element assigned" in caplog.text
 
 
-def test_residue_formula_counts_missing_elements():
+def test_residue_formula_counts_missing_elements() -> None:
     top = app.Topology()
     residue = top.addResidue("LIG", top.addChain("A"))
     top.addAtom("X1", None, residue)
@@ -188,30 +191,30 @@ def test_residue_formula_counts_missing_elements():
 # --------------------------------------------------------------------------
 
 
-def test_geometry_accepts_a_sane_molecule():
+def test_geometry_accepts_a_sane_molecule() -> None:
     check_geometry([(0.0, 0.0, 0.0), (1.5, 0.0, 0.0)], "LIG")
 
 
-def test_geometry_rejects_coincident_atoms():
+def test_geometry_rejects_coincident_atoms() -> None:
     with pytest.raises(ValueError, match=r"0\.100 A apart"):
         check_geometry([(0.0, 0.0, 0.0), (0.1, 0.0, 0.0)], "LIG")
 
 
-def test_geometry_rejects_a_missing_conformer():
+def test_geometry_rejects_a_missing_conformer() -> None:
     with pytest.raises(ValueError, match="no 3D conformer"):
         check_geometry([(0.0, 0.0, 0.0)] * 3, "LIG")
 
 
-def test_geometry_rejects_non_finite_coordinates():
+def test_geometry_rejects_non_finite_coordinates() -> None:
     with pytest.raises(ValueError, match="non-finite"):
         check_geometry([(0.0, 0.0, 0.0), (float("nan"), 0.0, 0.0)], "LIG")
 
 
-def test_geometry_ignores_an_empty_position_list():
+def test_geometry_ignores_an_empty_position_list() -> None:
     check_geometry([], "LIG")
 
 
-def test_geometry_can_be_downgraded_to_a_warning(caplog):
+def test_geometry_can_be_downgraded_to_a_warning(caplog: pytest.LogCaptureFixture) -> None:
     with caplog.at_level("WARNING"):
         check_geometry([(0.0, 0.0, 0.0), (0.1, 0.0, 0.0)], "LIG", strict=False)
     assert "apart" in caplog.text
@@ -231,22 +234,22 @@ def test_geometry_can_be_downgraded_to_a_warning(caplog):
         ("2ol.sdf", "L2O"),
     ],
 )
-def test_residue_name_from_file_name(filename, expected):
+def test_residue_name_from_file_name(filename: str, expected: str) -> None:
     assert residue_name_for(filename) == expected
 
 
-def test_residue_name_needs_something_to_work_with():
+def test_residue_name_needs_something_to_work_with() -> None:
     with pytest.raises(ValueError, match="no alphanumeric"):
         residue_name_for("---.sdf")
 
 
-def _sdf_records(text, titles):
+def _sdf_records(text: str, titles: Sequence[str]) -> str:
     """Concatenate *text* once per title, each terminated properly."""
     body = text.rstrip("\n").split("\n", 1)[1]
     return "".join(f"{title}\n{body}\n$$$$\n" for title in titles)
 
 
-def test_split_multi_sdf_uses_the_title_line(tmp_path):
+def test_split_multi_sdf_uses_the_title_line(tmp_path: Path) -> None:
     source = tmp_path / "multi.sdf"
     source.write_text(_sdf_records(BENZAMIDINIUM.read_text(), ["AAA", "BBB"]))
     out = split_multi_sdf(source, tmp_path / "split")
@@ -255,7 +258,7 @@ def test_split_multi_sdf_uses_the_title_line(tmp_path):
         assert inspect_ligand_file(path, prefer_rdkit=False).formula == "C7H9N2"
 
 
-def test_split_multi_sdf_falls_back_to_the_file_name(tmp_path):
+def test_split_multi_sdf_falls_back_to_the_file_name(tmp_path: Path) -> None:
     # An SDF's title line is line 1 and is very often blank; the program line
     # below it ("     RDKit          3D") must never become the residue name.
     source = tmp_path / "ligand.sdf"
@@ -263,19 +266,19 @@ def test_split_multi_sdf_falls_back_to_the_file_name(tmp_path):
     assert list(split_multi_sdf(source, tmp_path / "split")) == ["LIG"]
 
 
-def test_split_multi_sdf_accepts_a_final_record_with_no_terminator(tmp_path):
+def test_split_multi_sdf_accepts_a_final_record_with_no_terminator(tmp_path: Path) -> None:
     # examples/data/benzamidinium.sdf is exactly this shape.
     assert list(split_multi_sdf(BENZAMIDINIUM, tmp_path / "split")) == ["BEN"]
 
 
-def test_split_multi_sdf_refuses_duplicate_names(tmp_path):
+def test_split_multi_sdf_refuses_duplicate_names(tmp_path: Path) -> None:
     source = tmp_path / "multi.sdf"
     source.write_text(_sdf_records(BENZAMIDINIUM.read_text(), ["SAME", "SAME"]))
     with pytest.raises(ValueError, match="already used"):
         split_multi_sdf(source, tmp_path / "split")
 
 
-def test_split_multi_sdf_rejects_an_empty_file(tmp_path):
+def test_split_multi_sdf_rejects_an_empty_file(tmp_path: Path) -> None:
     empty = tmp_path / "empty.sdf"
     empty.write_text("\n\n")
     with pytest.raises(ValueError, match="no molecules"):
@@ -287,7 +290,7 @@ def test_split_multi_sdf_rejects_an_empty_file(tmp_path):
 # --------------------------------------------------------------------------
 
 
-def test_smiles_to_sdf_embeds_hydrogens_and_charge(tmp_path):
+def test_smiles_to_sdf_embeds_hydrogens_and_charge(tmp_path: Path) -> None:
     out = smiles_to_sdf("NC(=[NH2+])c1ccccc1", tmp_path / "ben.sdf", "BEN")
     info = inspect_ligand_file(out)
     assert info.formula == "C7H9N2"
@@ -296,19 +299,19 @@ def test_smiles_to_sdf_embeds_hydrogens_and_charge(tmp_path):
     assert len(set(info.positions)) == info.n_atoms
 
 
-def test_smiles_to_sdf_is_reproducible(tmp_path):
+def test_smiles_to_sdf_is_reproducible(tmp_path: Path) -> None:
     # The seed is fixed so a re-run gives the same conformer and so the same charges.
     first = Path(smiles_to_sdf("CCO", tmp_path / "a.sdf", "ETH")).read_text()
     second = Path(smiles_to_sdf("CCO", tmp_path / "b.sdf", "ETH")).read_text()
     assert first == second
 
 
-def test_smiles_to_sdf_rejects_nonsense(tmp_path):
+def test_smiles_to_sdf_rejects_nonsense(tmp_path: Path) -> None:
     with pytest.raises(RuntimeError, match="could not parse"):
         smiles_to_sdf("this is not a smiles", tmp_path / "x.sdf", "LIG")
 
 
-def test_smiles_with_residue_geometry_keeps_the_structure_coordinates(tmp_path):
+def test_smiles_with_residue_geometry_keeps_the_structure_coordinates(tmp_path: Path) -> None:
     pdb = write_methanol_pdb(tmp_path / "in.pdb")
     out = smiles_with_residue_geometry("CO", pdb, tmp_path / "lig.sdf", "LIG")
     info = inspect_ligand_file(out)
@@ -319,19 +322,19 @@ def test_smiles_with_residue_geometry_keeps_the_structure_coordinates(tmp_path):
     assert flat == pytest.approx([c for xyz in original.positions for c in xyz], abs=1e-3)
 
 
-def test_smiles_with_residue_geometry_rejects_a_different_molecule(tmp_path):
+def test_smiles_with_residue_geometry_rejects_a_different_molecule(tmp_path: Path) -> None:
     pdb = write_methanol_pdb(tmp_path / "in.pdb")
     with pytest.raises(RuntimeError, match="does not match the residue"):
         smiles_with_residue_geometry("CCO", pdb, tmp_path / "lig.sdf", "LIG")
 
 
-def test_info_reports_where_it_came_from(tmp_path):
+def test_info_reports_where_it_came_from(tmp_path: Path) -> None:
     info = inspect_ligand_file(write_methanol_sdf(tmp_path / "lig.sdf"), prefer_rdkit=False)
     assert info.source == "text"
     assert isinstance(info, LigandFileInfo)
 
 
-def test_gaff_mol2_falls_back_to_the_text_reader(tmp_path):
+def test_gaff_mol2_falls_back_to_the_text_reader(tmp_path: Path) -> None:
     # Not a hypothetical: RDKit's mol2 parser expects SYBYL atom types and
     # returns None for the GAFF-typed file antechamber writes, so prefer_rdkit
     # silently lands on ParmEd. This is the reason the text readers exist now

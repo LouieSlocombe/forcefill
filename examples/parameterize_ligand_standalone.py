@@ -22,19 +22,21 @@ Requires AmberTools on PATH for the GAFF half; the OpenFF stack the SMIRNOFF
 half needs is an ordinary forcefill dependency.
 """
 
+from __future__ import annotations
+
 import logging
 import shutil
 from pathlib import Path
 
 from openmm import app
 
-from forcefill import LigandSpec, build_ligand_xml
+from forcefill import LigandSpec, ParameterizationResult, build_ligand_xml
 
 HERE = Path(__file__).parent
 BEN_SDF = HERE / "data" / "benzamidinium.sdf"
 
 
-def run(backend, output_xml, workdir):
+def run(backend: str, output_xml: Path, workdir: Path) -> ParameterizationResult:
     """Parameterize the ligand with one backend and report what came out."""
     print(f"\n--- {backend} ---")
     result = build_ligand_xml(
@@ -58,7 +60,7 @@ def run(backend, output_xml, workdir):
     return result
 
 
-def main():
+def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 
     run("smirnoff", HERE / "ben_standalone_smirnoff.xml", HERE / "wd_standalone_smirnoff")

@@ -4,9 +4,12 @@ Hermetic: ``_run`` is stubbed out, so no real antechamber or parmchk2 is
 invoked. The real-executable version lives in test_integration.py.
 """
 
+from __future__ import annotations
+
 import shutil
 import sys
 import xml.etree.ElementTree as ET
+from collections.abc import Sequence
 from pathlib import Path
 
 import pytest
@@ -15,17 +18,18 @@ pytest.importorskip("openmm")
 pytest.importorskip("parmed")
 
 from forcefill import amber
+from forcefill._spec import PathLike
 from tests.helpers import DATA
 
 
 class _RunRecorder:
     """Stands in for _run: records calls and creates the '-o' output file."""
 
-    def __init__(self):
-        self.calls = []
-        self.kwargs = []
+    def __init__(self) -> None:
+        self.calls: list[tuple[list[str], Path]] = []
+        self.kwargs: list[dict[str, float | str | None]] = []
 
-    def __call__(self, cmd, cwd, **kwargs):
+    def __call__(self, cmd: Sequence[str], cwd: PathLike, **kwargs: float | str | None) -> None:
         argv = [str(c) for c in cmd]
         self.calls.append((argv, Path(cwd)))
         self.kwargs.append(kwargs)
@@ -35,7 +39,7 @@ class _RunRecorder:
 
 
 @pytest.fixture
-def recorder(monkeypatch):
+def recorder(monkeypatch: pytest.MonkeyPatch) -> _RunRecorder:
     """Stub out ``_run`` and the executable lookup; hand back the recorder."""
     rec = _RunRecorder()
     monkeypatch.setattr(amber, "require_executable", lambda name: name)
@@ -46,13 +50,15 @@ def recorder(monkeypatch):
 # -- running the executables -----------------------------------------------
 
 
-def test_require_executable_raises_when_missing(monkeypatch):
+def test_require_executable_raises_when_missing(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(shutil, "which", lambda name: None)
     with pytest.raises(RuntimeError, match="AmberTools"):
         amber.require_executable("antechamber")
 
 
-def test_run_antechamber_resolves_relative_paths(recorder, monkeypatch, tmp_path):
+def test_run_antechamber_resolves_relative_paths(
+    recorder: _RunRecorder, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     monkeypatch.chdir(tmp_path)
 
     amber.run_antechamber("wd/LIG/LIG.pdb", "wd/LIG/LIG.mol2", "LIG")
@@ -65,7 +71,9 @@ def test_run_antechamber_resolves_relative_paths(recorder, monkeypatch, tmp_path
     assert cwd == (tmp_path / "wd/LIG").resolve()
 
 
-def test_run_parmchk2_resolves_relative_paths(recorder, monkeypatch, tmp_path):
+def test_run_parmchk2_resolves_relative_paths(
+    recorder: _RunRecorder, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     monkeypatch.chdir(tmp_path)
 
     amber.run_parmchk2("wd/LIG/LIG.mol2", "wd/LIG/LIG.frcmod")
@@ -78,7 +86,7 @@ def test_run_parmchk2_resolves_relative_paths(recorder, monkeypatch, tmp_path):
     assert cwd == (tmp_path / "wd/LIG").resolve()
 
 
-def test_run_antechamber_purge_scratch_flag(recorder, tmp_path):
+def test_run_antechamber_purge_scratch_flag(recorder: _RunRecorder, tmp_path: Path) -> None:
     amber.run_antechamber(tmp_path / "in.pdb", tmp_path / "out.mol2", "LIG")
     amber.run_antechamber(tmp_path / "in.pdb", tmp_path / "out.mol2", "LIG", purge_scratch=False)
 
@@ -87,7 +95,7 @@ def test_run_antechamber_purge_scratch_flag(recorder, tmp_path):
     assert cmd_keep[cmd_keep.index("-pf") + 1] == "n"
 
 
-def test_run_antechamber_infers_input_format(recorder, tmp_path):
+def test_run_antechamber_infers_input_format(recorder: _RunRecorder, tmp_path: Path) -> None:
     amber.run_antechamber(tmp_path / "lig.sdf", tmp_path / "a.mol2", "LIG")
     amber.run_antechamber(tmp_path / "lig.mol2", tmp_path / "b.mol2", "LIG")
     amber.run_antechamber(tmp_path / "lig.xyz", tmp_path / "c.mol2", "LIG", input_format="mol2")
@@ -96,26 +104,26 @@ def test_run_antechamber_infers_input_format(recorder, tmp_path):
     assert formats == ["sdf", "mol2", "mol2"]
 
 
-def test_run_antechamber_unknown_suffix_raises(recorder, tmp_path):
+def test_run_antechamber_unknown_suffix_raises(recorder: _RunRecorder, tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="input format"):
         amber.run_antechamber(tmp_path / "lig.xyz", tmp_path / "out.mol2", "LIG")
 
 
-def test_run_antechamber_missing_output_raises(monkeypatch, tmp_path):
+def test_run_antechamber_missing_output_raises(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setattr(amber, "require_executable", lambda name: name)
     monkeypatch.setattr(amber, "_run", lambda cmd, cwd, **kw: None)  # writes nothing
     with pytest.raises(RuntimeError, match="did not write"):
         amber.run_antechamber(tmp_path / "in.pdb", tmp_path / "out.mol2", "LIG")
 
 
-def test_run_parmchk2_missing_output_raises(monkeypatch, tmp_path):
+def test_run_parmchk2_missing_output_raises(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setattr(amber, "require_executable", lambda name: name)
     monkeypatch.setattr(amber, "_run", lambda cmd, cwd, **kw: None)
     with pytest.raises(RuntimeError, match="did not write"):
         amber.run_parmchk2(tmp_path / "in.mol2", tmp_path / "out.frcmod")
 
 
-def test_run_nonzero_exit_includes_tails_and_hint(tmp_path):
+def test_run_nonzero_exit_includes_tails_and_hint(tmp_path: Path) -> None:
     script = "import sys; print('OUT-MARKER'); print('ERR-MARKER', file=sys.stderr); sys.exit(3)"
     with pytest.raises(RuntimeError) as excinfo:
         amber._run([sys.executable, "-c", script], cwd=tmp_path, hint="HINT-TEXT")
@@ -126,12 +134,12 @@ def test_run_nonzero_exit_includes_tails_and_hint(tmp_path):
     assert msg.endswith("HINT-TEXT")
 
 
-def test_run_timeout(tmp_path):
+def test_run_timeout(tmp_path: Path) -> None:
     with pytest.raises(RuntimeError, match="timed out"):
         amber._run([sys.executable, "-c", "import time; time.sleep(30)"], cwd=tmp_path, timeout=0.2)
 
 
-def test_bad_atom_type_rejected_early(tmp_path):
+def test_bad_atom_type_rejected_early(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="atom_type"):
         amber.run_antechamber(tmp_path / "in.pdb", tmp_path / "out.mol2", "LIG", atom_type="gaff3")
     with pytest.raises(ValueError, match="atom_type"):
@@ -140,7 +148,7 @@ def test_bad_atom_type_rejected_early(tmp_path):
         amber.locate_gaff_dat("gaff3")
 
 
-def test_bad_charge_method_rejected_early(tmp_path):
+def test_bad_charge_method_rejected_early(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="charge_method"):
         amber.run_antechamber(tmp_path / "in.pdb", tmp_path / "out.mol2", "LIG", charge_method="bbc")
 
@@ -148,7 +156,7 @@ def test_bad_charge_method_rejected_early(tmp_path):
 # -- locate_gaff_dat -------------------------------------------------------
 
 
-def test_locate_gaff_dat_search_order(monkeypatch, tmp_path):
+def test_locate_gaff_dat_search_order(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     roots = {key: tmp_path / key for key in ("amberhome", "conda", "which")}
     dats = {}
     for key, root in roots.items():
@@ -167,7 +175,7 @@ def test_locate_gaff_dat_search_order(monkeypatch, tmp_path):
     assert amber.locate_gaff_dat() == str(dats["which"])
 
 
-def test_locate_gaff_dat_error_lists_candidates(monkeypatch, tmp_path):
+def test_locate_gaff_dat_error_lists_candidates(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.delenv("AMBERHOME", raising=False)
     monkeypatch.setenv("CONDA_PREFIX", str(tmp_path))
     monkeypatch.setattr(shutil, "which", lambda name: None)
@@ -179,7 +187,7 @@ def test_locate_gaff_dat_error_lists_candidates(monkeypatch, tmp_path):
 # -- ParmEd assembly against the committed fixtures ------------------------
 
 
-def test_assemble_openmm_ffxml_semantic(tmp_path):
+def test_assemble_openmm_ffxml_semantic(tmp_path: Path) -> None:
     out = tmp_path / "sub" / "lig.xml"  # exercises output-directory creation
     path = amber.assemble_openmm_ffxml({"LIG": DATA / "methanol.mol2"}, [DATA / "methanol.frcmod"], out)
     assert Path(path) == out
@@ -195,7 +203,7 @@ def test_assemble_openmm_ffxml_semantic(tmp_path):
         assert tree.find(f".//{section}") is not None, section
 
 
-def test_load_residue_template_rejects_multi_residue_mol2(tmp_path):
+def test_load_residue_template_rejects_multi_residue_mol2(tmp_path: Path) -> None:
     multi = tmp_path / "two.mol2"
     multi.write_text(
         "@<TRIPOS>MOLECULE\n"
@@ -220,6 +228,6 @@ def test_load_residue_template_rejects_multi_residue_mol2(tmp_path):
         amber.load_residue_template(multi, "X")
 
 
-def test_load_residue_template_rejects_non_template():
+def test_load_residue_template_rejects_non_template() -> None:
     with pytest.raises(TypeError, match="ResidueTemplate"):
         amber.load_residue_template(DATA / "methanol.frcmod", "X")

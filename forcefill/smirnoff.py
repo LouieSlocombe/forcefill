@@ -24,11 +24,15 @@ from __future__ import annotations
 import logging
 import xml.etree.ElementTree as ET
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from openff.toolkit import Molecule
 from openmmforcefields.generators import SMIRNOFFTemplateGenerator
 
 from ._spec import PathLike, ResolvedSpec
+
+if TYPE_CHECKING:
+    from openmm import app, unit
 
 log = logging.getLogger(__name__)
 
@@ -45,7 +49,7 @@ def installed_smirnoff_forcefields() -> list[str]:
     return list(SMIRNOFFTemplateGenerator.INSTALLED_FORCEFIELDS)
 
 
-def _load_molecule(spec: ResolvedSpec):  # -> an openff Molecule
+def _load_molecule(spec: ResolvedSpec) -> Molecule:
     """Build an OpenFF Molecule from the spec's file or SMILES, with a 3D conformer."""
     if spec.smiles is not None:
         molecule = Molecule.from_smiles(spec.smiles, allow_undefined_stereo=True)
@@ -110,7 +114,7 @@ def _rename_residue_template(ffxml: str, name: str) -> str:
     return ET.tostring(root, encoding="unicode")
 
 
-def ligand_topology(spec: ResolvedSpec):  # -> (openmm Topology, Quantity)
+def ligand_topology(spec: ResolvedSpec) -> tuple[app.Topology, unit.Quantity]:
     """Return ``(topology, positions)`` for the spec's molecule, for validating it on its own.
 
     Standalone mode has no input structure to check the generated template

@@ -51,7 +51,9 @@ def _warn_if_no_hydrogens(name: str, residue: app.topology.Residue) -> None:
         )
 
 
-def _resolve_smiles(spec: ResolvedSpec, residue: app.topology.Residue | None, positions, res_dir: Path) -> ResolvedSpec:
+def _resolve_smiles(
+    spec: ResolvedSpec, residue: app.topology.Residue | None, positions: unit.Quantity | None, res_dir: Path
+) -> ResolvedSpec:
     """Embed a spec's SMILES to an SDF and return the spec pointing at it.
 
     When the residue is also present in the input structure, the structure's

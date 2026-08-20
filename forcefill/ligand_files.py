@@ -102,7 +102,7 @@ def residue_formula(residue: app.topology.Residue) -> Counter[str]:
 # --------------------------------------------------------------------------
 
 
-def _rdkit_mol_from_file(path: Path):  # -> an rdkit Mol, which we cannot annotate without importing it
+def _rdkit_mol_from_file(path: Path) -> Chem.Mol | None:
     """Load *path* with RDKit, or return None if RDKit cannot read it.
 
     None means the format defeated RDKit - chiefly the GAFF-typed mol2
@@ -133,7 +133,7 @@ def _rdkit_mol_from_file(path: Path):  # -> an rdkit Mol, which we cannot annota
     return None
 
 
-def _info_from_rdkit(mol, path: Path) -> LigandFileInfo:  # mol is an rdkit Mol
+def _info_from_rdkit(mol: Chem.Mol, path: Path) -> LigandFileInfo:
     """Build a LigandFileInfo from an RDKit molecule."""
     positions: list[tuple[float, float, float]] = []
     if mol.GetNumConformers():
@@ -466,7 +466,7 @@ def _close_pairs(
 # --------------------------------------------------------------------------
 
 
-def _write_sdf(mol, out_sdf: PathLike) -> str:  # mol is an rdkit Mol
+def _write_sdf(mol: Chem.Mol, out_sdf: PathLike) -> str:
     """Write one molecule to *out_sdf*, creating its parent directory."""
     out_sdf = Path(out_sdf)
     out_sdf.parent.mkdir(parents=True, exist_ok=True)

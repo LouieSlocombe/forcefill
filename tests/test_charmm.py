@@ -13,7 +13,10 @@ error message, which makes
 most here.
 """
 
+from __future__ import annotations
+
 import xml.etree.ElementTree as ET
+from collections.abc import Sequence
 from pathlib import Path
 
 import pytest
@@ -109,19 +112,19 @@ UNPRUNED_XML = REFERENCE_XML.replace(
 )
 
 
-def convert(tmp_path, files=(STREAM,), name="LIG"):
+def convert(tmp_path: Path, files: Sequence[Path] = (STREAM,), name: str = "LIG") -> str:
     """Run one spec through the backend and return the path written."""
     spec = ResolvedSpec(name=name, backend="charmm", charmm_files=tuple(files))
     return charmm.charmm_residue_ffxml(spec, tmp_path / f"{name}.xml", CHARMM_BASE_FORCEFIELD)
 
 
-def write_stream(path, body):
+def write_stream(path: Path, body: str) -> Path:
     """Write a minimal CHARMM stream file with *body* as its rtf section."""
     Path(path).write_text(f"* test\n*\n\nread rtf card append\n* test\n*\n36 1\n\n{body}\n\nEND\nRETURN\n")
     return path
 
 
-def methanol_pair(name="LIG", separation=8.0):
+def methanol_pair(name: str = "LIG", separation: float = 8.0) -> tuple[app.Topology, unit.Quantity]:
     """Two copies of the test methanol, far enough apart to have real intermolecular LJ."""
     top = app.Topology()
     chain = top.addChain("A")
@@ -135,7 +138,7 @@ def methanol_pair(name="LIG", separation=8.0):
     return top, unit.Quantity([openmm.Vec3(*p) for p in xyz], unit.angstrom)
 
 
-def energy(files, topology, positions, *, uncharged=False):
+def energy(files: Sequence[str], topology: app.Topology, positions: unit.Quantity, *, uncharged: bool = False) -> float:
     """Potential energy of *topology* under *files*; with *uncharged*, what is left is the LJ."""
     system = app.ForceField(*files).createSystem(topology, nonbondedMethod=app.NoCutoff)
     if uncharged:
@@ -157,7 +160,7 @@ def energy(files, topology, positions, *, uncharged=False):
 # --------------------------------------------------------------------------
 
 
-def test_the_residue_template_is_written(tmp_path):
+def test_the_residue_template_is_written(tmp_path: Path) -> None:
     root = ET.parse(convert(tmp_path)).getroot()
     (residue,) = root.findall("./Residues/Residue")
     assert residue.get("name") == "LIG"
@@ -173,7 +176,7 @@ def test_the_residue_template_is_written(tmp_path):
     assert round(sum(float(a.get("charge")) for a in residue.findall("Atom")), 6) == 0.0
 
 
-def test_the_base_force_fields_definitions_are_not_repeated(tmp_path):
+def test_the_base_force_fields_definitions_are_not_repeated(tmp_path: Path) -> None:
     root = ET.parse(convert(tmp_path)).getroot()
     # CG331 and friends belong to charmm36.xml. Redefining them here would
     # override it - with epsilon=0, since a stream file carries no LJ terms.
@@ -184,7 +187,7 @@ def test_the_base_force_fields_definitions_are_not_repeated(tmp_path):
     assert root.findall("./NonbondedForce/UseAttributeFromResidue")
 
 
-def test_the_stream_files_own_parameters_are_kept(tmp_path):
+def test_the_stream_files_own_parameters_are_kept(tmp_path: Path) -> None:
     root = ET.parse(convert(tmp_path)).getroot()
     # The three terms the stream file's `read param` section defines: these are
     # what ParamChem assigns by analogy, and are the reason it exists.
@@ -193,7 +196,7 @@ def test_the_stream_files_own_parameters_are_kept(tmp_path):
     assert [t.get("class1") for t in root.findall("./PeriodicTorsionForce/Proper")] == ["HGA3"]
 
 
-def test_charmm_1_4_scaling_is_declared(tmp_path):
+def test_charmm_1_4_scaling_is_declared(tmp_path: Path) -> None:
     nonbonded = ET.parse(convert(tmp_path)).getroot().find("./NonbondedForce")
     assert (nonbonded.get("coulomb14scale"), nonbonded.get("lj14scale")) == ("1.0", "1.0")
 
@@ -203,13 +206,13 @@ def test_charmm_1_4_scaling_is_declared(tmp_path):
 # --------------------------------------------------------------------------
 
 
-def test_a_system_builds_on_the_charmm_base(tmp_path):
+def test_a_system_builds_on_the_charmm_base(tmp_path: Path) -> None:
     topology, positions = methanol_pair()
     result = energy([*CHARMM_BASE_FORCEFIELD, convert(tmp_path)], topology, positions)
     assert result == pytest.approx(144.8, abs=1.0)
 
 
-def test_base_lennard_jones_survives_the_conversion(tmp_path):
+def test_base_lennard_jones_survives_the_conversion(tmp_path: Path) -> None:
     """The generated XML must leave charmm36's own Lennard-Jones parameters alone.
 
     ParmEd writes ``sigma=1.0 epsilon=0.0`` for every type whose non-bonded
@@ -224,7 +227,7 @@ def test_base_lennard_jones_survives_the_conversion(tmp_path):
     unpruned = tmp_path / "unpruned.xml"
     unpruned.write_text(UNPRUNED_XML)
 
-    def lj(xml_file):
+    def lj(xml_file: str | Path) -> float:
         return energy([*CHARMM_BASE_FORCEFIELD, str(xml_file)], topology, positions, uncharged=True)
 
     assert lj(convert(tmp_path)) == pytest.approx(lj(reference), rel=1e-9)
@@ -233,31 +236,31 @@ def test_base_lennard_jones_survives_the_conversion(tmp_path):
     assert lj(unpruned) != pytest.approx(lj(reference), rel=1e-6)
 
 
-def charged_spec(tmp_path, **kwargs):
+def charged_spec(tmp_path: Path, **kwargs: int) -> ResolvedSpec:
     stream = write_stream(tmp_path / "amm.str", AMMONIUM)
     return ResolvedSpec(name="AMM", backend="charmm", charmm_files=(stream,), **kwargs)
 
 
-def preflight(spec, tmp_path):
+def preflight(spec: ResolvedSpec, tmp_path: Path) -> ResolvedSpec:
     return preflight_specs({spec.name: spec}, {}, None, tmp_path, base_forcefield=CHARMM_BASE_FORCEFIELD)[spec.name]
 
 
-def test_the_net_charge_comes_from_the_stream_file(tmp_path):
+def test_the_net_charge_comes_from_the_stream_file(tmp_path: Path) -> None:
     # The RESI block's charges sum to the formal charge, the same way an SDF's
     # M CHG record states it - so it never has to be given by hand.
     assert preflight(charged_spec(tmp_path), tmp_path).net_charge == 1
 
 
-def test_an_agreeing_net_charge_is_left_alone(tmp_path):
+def test_an_agreeing_net_charge_is_left_alone(tmp_path: Path) -> None:
     assert preflight(charged_spec(tmp_path, net_charge=1), tmp_path).net_charge == 1
 
 
-def test_a_contradictory_net_charge_is_refused(tmp_path):
+def test_a_contradictory_net_charge_is_refused(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="describes a molecule with a formal charge"):
         preflight(charged_spec(tmp_path, net_charge=0), tmp_path)
 
 
-def test_ligand_topology_reproduces_the_bond_graph():
+def test_ligand_topology_reproduces_the_bond_graph() -> None:
     spec = ResolvedSpec(name="LIG", backend="charmm", charmm_files=(STREAM,))
     topology = charmm.ligand_topology(spec)
     assert [r.name for r in topology.residues()] == ["LIG"]
@@ -270,7 +273,7 @@ def test_ligand_topology_reproduces_the_bond_graph():
 # --------------------------------------------------------------------------
 
 
-def test_a_file_parmed_cannot_type_is_refused(tmp_path):
+def test_a_file_parmed_cannot_type_is_refused(tmp_path: Path) -> None:
     # ParmEd decides what a file is from its name, so this is a real trap: the
     # contents are fine and it still fails.
     renamed = tmp_path / "methanol_cgenff.str.txt"
@@ -279,12 +282,12 @@ def test_a_file_parmed_cannot_type_is_refused(tmp_path):
         convert(tmp_path, files=(renamed,))
 
 
-def test_no_files_at_all_is_refused():
+def test_no_files_at_all_is_refused() -> None:
     with pytest.raises(ValueError, match="at least one CHARMM file"):
         charmm.read_charmm_files([])
 
 
-def test_an_unknown_atom_type_is_refused(tmp_path):
+def test_an_unknown_atom_type_is_refused(tmp_path: Path) -> None:
     stream = write_stream(
         tmp_path / "bad.str",
         "RESI LIG 0.000\nGROUP\nATOM C1 XX999 0.000\nATOM O1 OG311 0.000\n\nBOND C1 O1\n",
@@ -293,14 +296,14 @@ def test_an_unknown_atom_type_is_refused(tmp_path):
         convert(tmp_path, files=(stream,))
 
 
-def test_a_file_with_no_residue_is_refused(tmp_path):
+def test_a_file_with_no_residue_is_refused(tmp_path: Path) -> None:
     empty = tmp_path / "params_only.str"
     empty.write_text("* test\n*\n\nread param card flex append\n* test\n*\n\nEND\nRETURN\n")
     with pytest.raises(ValueError, match="defines no residue template"):
         convert(tmp_path, files=(empty,))
 
 
-def test_an_empty_document_is_refused(tmp_path, monkeypatch):
+def test_an_empty_document_is_refused(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """The backstop for ParmEd dropping a residue template with only a warning.
 
     Nothing forcefill can pass it triggers that today - unresolvable atom types
@@ -309,7 +312,7 @@ def test_an_empty_document_is_refused(tmp_path, monkeypatch):
     """
     from parmed.openmm import OpenMMParameterSet
 
-    def write_nothing(self, dest, **kwargs):
+    def write_nothing(self: OpenMMParameterSet, dest: str, **kwargs: object) -> None:
         Path(dest).write_text("<ForceField/>")
 
     monkeypatch.setattr(OpenMMParameterSet, "write", write_nothing)
@@ -317,14 +320,14 @@ def test_an_empty_document_is_refused(tmp_path, monkeypatch):
         convert(tmp_path)
 
 
-def test_a_lone_residue_is_renamed_to_the_one_asked_for(tmp_path):
+def test_a_lone_residue_is_renamed_to_the_one_asked_for(tmp_path: Path) -> None:
     # The RESI name is whatever was typed into ParamChem; the structure decides
     # what the residue is actually called.
     root = ET.parse(convert(tmp_path, name="ABC")).getroot()
     assert [r.get("name") for r in root.findall("./Residues/Residue")] == ["ABC"]
 
 
-def test_several_residues_with_no_match_is_refused(tmp_path):
+def test_several_residues_with_no_match_is_refused(tmp_path: Path) -> None:
     stream = write_stream(
         tmp_path / "two.str",
         "RESI AAA 0.000\nGROUP\nATOM C1 CG331 0.000\nATOM O1 OG311 0.000\n\nBOND C1 O1\n\n"
@@ -339,27 +342,27 @@ def test_several_residues_with_no_match_is_refused(tmp_path):
 # --------------------------------------------------------------------------
 
 
-def charmm_spec(name="LIG"):
+def charmm_spec(name: str = "LIG") -> ResolvedSpec:
     return ResolvedSpec(name=name, backend="charmm", charmm_files=(STREAM,))
 
 
-def test_charmm_with_the_amber_base_is_refused():
+def test_charmm_with_the_amber_base_is_refused() -> None:
     with pytest.raises(ValueError, match="1-4 scaling 1/1"):
         check_backends_match_base({"LIG": charmm_spec()}, ("amber14-all.xml", "amber14/tip3p.xml"))
 
 
-def test_gaff_with_the_charmm_base_is_refused():
+def test_gaff_with_the_charmm_base_is_refused() -> None:
     with pytest.raises(ValueError, match=r"gaff backend produces parameters with 1-4 scaling 0\.8333"):
         check_backends_match_base({"LIG": ResolvedSpec(name="LIG")}, CHARMM_BASE_FORCEFIELD)
 
 
-def test_charmm_mixed_with_gaff_is_refused():
+def test_charmm_mixed_with_gaff_is_refused() -> None:
     specs = {"LIG": charmm_spec(), "BEN": ResolvedSpec(name="BEN", backend="gaff")}
     with pytest.raises(ValueError, match="both CHARMM and Amber-family"):
         check_backends_match_base(specs, CHARMM_BASE_FORCEFIELD)
 
 
-def test_matching_combinations_pass():
+def test_matching_combinations_pass() -> None:
     check_backends_match_base({"LIG": charmm_spec()}, CHARMM_BASE_FORCEFIELD)
     check_backends_match_base({"LIG": ResolvedSpec(name="LIG")}, ("amber14-all.xml", "amber14/tip3p.xml"))
     # An empty base force field declares nothing, so nothing can contradict it.
@@ -372,7 +375,7 @@ def test_matching_combinations_pass():
 # --------------------------------------------------------------------------
 
 
-def test_build_ligand_xml_takes_a_stream_file_directly(tmp_path):
+def test_build_ligand_xml_takes_a_stream_file_directly(tmp_path: Path) -> None:
     # A CHARMM suffix is unambiguous, so the backend and the residue name can
     # both be read off the path - as they are for an SDF.
     stream = tmp_path / "lig.str"
@@ -388,7 +391,7 @@ def test_build_ligand_xml_takes_a_stream_file_directly(tmp_path):
     assert '<Residue name="LIG">' in Path(result.forcefield_xml).read_text()
 
 
-def test_build_ligand_xml_names_the_ligand_explicitly(tmp_path):
+def test_build_ligand_xml_names_the_ligand_explicitly(tmp_path: Path) -> None:
     result = build_ligand_xml(
         {"ABC": LigandSpec(backend="charmm", charmm_files=(STREAM,))},
         tmp_path / "out.xml",
@@ -398,7 +401,7 @@ def test_build_ligand_xml_names_the_ligand_explicitly(tmp_path):
     assert result.parameterized == ["ABC"]
 
 
-def test_a_name_the_base_force_field_already_uses_is_refused(tmp_path):
+def test_a_name_the_base_force_field_already_uses_is_refused(tmp_path: Path) -> None:
     # charmm36.xml has 814 templates, so this is easy to hit: MET is methionine.
     with pytest.raises(ValueError, match="already defines a residue template named MET"):
         build_ligand_xml(
@@ -409,7 +412,7 @@ def test_a_name_the_base_force_field_already_uses_is_refused(tmp_path):
         )
 
 
-def test_two_charmm_ligands_merge_into_one_file(tmp_path):
+def test_two_charmm_ligands_merge_into_one_file(tmp_path: Path) -> None:
     result = build_ligand_xml(
         {
             "LIG": LigandSpec(backend="charmm", charmm_files=(STREAM,)),
@@ -430,7 +433,7 @@ def test_two_charmm_ligands_merge_into_one_file(tmp_path):
     assert len(nonbonded.findall("UseAttributeFromResidue")) == 1
 
 
-def test_build_ligand_xml_refuses_to_minimize_a_charmm_ligand(tmp_path):
+def test_build_ligand_xml_refuses_to_minimize_a_charmm_ligand(tmp_path: Path) -> None:
     # A stream file records internal coordinates, so every atom would start at
     # the origin - an infinite Coulomb energy dressed up as a parameter problem.
     with pytest.raises(ValueError, match="no geometry to minimize"):
@@ -443,7 +446,7 @@ def test_build_ligand_xml_refuses_to_minimize_a_charmm_ligand(tmp_path):
         )
 
 
-def test_build_forcefield_xml_parameterizes_a_pdb_residue(tmp_path):
+def test_build_forcefield_xml_parameterizes_a_pdb_residue(tmp_path: Path) -> None:
     pdb = write_chloroethanol_pdb(tmp_path / "in.pdb")
     result = build_forcefield_xml(
         pdb,
@@ -462,7 +465,7 @@ def test_build_forcefield_xml_parameterizes_a_pdb_residue(tmp_path):
     assert result.full_minimization.n_atoms == len(CHLOROETHANOL_ATOMS)
 
 
-def test_charmm36_matches_the_small_ligands_it_already_ships(tmp_path):
+def test_charmm36_matches_the_small_ligands_it_already_ships(tmp_path: Path) -> None:
     # charmm36.xml carries every CGenFF model compound, so a fragment-sized
     # ligand may need nothing at all - and then no backend runs.
     pdb = write_methanol_pdb(tmp_path / "in.pdb")
@@ -473,7 +476,7 @@ def test_charmm36_matches_the_small_ligands_it_already_ships(tmp_path):
     assert result.parameterized == []
 
 
-def test_a_stream_file_for_a_different_molecule_is_caught_first(tmp_path):
+def test_a_stream_file_for_a_different_molecule_is_caught_first(tmp_path: Path) -> None:
     pdb = write_chloroethanol_pdb(tmp_path / "in.pdb")
     stream = write_stream(
         tmp_path / "wrong.str",

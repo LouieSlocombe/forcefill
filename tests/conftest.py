@@ -1,7 +1,10 @@
 """Fixtures shared across the hermetic test modules."""
 
+from __future__ import annotations
+
 import shutil
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -9,11 +12,12 @@ pytest.importorskip("openmm")
 pytest.importorskip("parmed")
 
 from forcefill import amber
+from forcefill._spec import PathLike
 from tests.helpers import DATA
 
 
 @pytest.fixture
-def fake_ambertools(monkeypatch):
+def fake_ambertools(monkeypatch: pytest.MonkeyPatch) -> dict[str, list[dict[str, Any]]]:
     """Replace the AmberTools layer with fakes that install the committed fixtures.
 
     Patches :mod:`forcefill.amber` rather than any one caller: the pipeline
@@ -24,9 +28,9 @@ def fake_ambertools(monkeypatch):
     quietly goes looking for a real one fails here rather than passing on
     whichever machine happens to have AmberTools installed.
     """
-    calls = {"antechamber": [], "parmchk2": []}
+    calls: dict[str, list[dict[str, Any]]] = {"antechamber": [], "parmchk2": []}
 
-    def fake_antechamber(input_file, output_mol2, residue_name, **kwargs):
+    def fake_antechamber(input_file: PathLike, output_mol2: PathLike, residue_name: str, **kwargs: object) -> str:
         calls["antechamber"].append(
             {"input": str(input_file), "output": str(output_mol2), "residue": residue_name, **kwargs}
         )
@@ -35,7 +39,9 @@ def fake_ambertools(monkeypatch):
         shutil.copyfile(DATA / "methanol.mol2", out)
         return str(out)
 
-    def fake_parmchk2(input_mol2, output_frcmod, atom_type="gaff2", timeout=None):
+    def fake_parmchk2(
+        input_mol2: PathLike, output_frcmod: PathLike, atom_type: str = "gaff2", timeout: float | None = None
+    ) -> str:
         calls["parmchk2"].append(
             {"input": str(input_mol2), "output": str(output_frcmod), "atom_type": atom_type, "timeout": timeout}
         )
@@ -44,7 +50,7 @@ def fake_ambertools(monkeypatch):
 
     real_which = shutil.which
 
-    def which_without_ambertools(name, *args, **kwargs):
+    def which_without_ambertools(name: str, *args: Any, **kwargs: Any) -> str | None:
         return None if name in ("antechamber", "parmchk2") else real_which(name, *args, **kwargs)
 
     monkeypatch.setattr(shutil, "which", which_without_ambertools)

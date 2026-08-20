@@ -185,7 +185,9 @@ def residue_template(params: CharmmParameterSet, name: str, files: Sequence[Path
     )
 
 
-def _inject_atom_types(params: CharmmParameterSet, template: ResidueTemplate, known: Mapping[str, tuple[float, int]]):
+def _inject_atom_types(
+    params: CharmmParameterSet, template: ResidueTemplate, known: Mapping[str, tuple[float, int]]
+) -> list[str]:
     """Give *params* an AtomType for every type *template* uses but does not define.
 
     Without this ParmEd's writer drops the residue template and writes an empty

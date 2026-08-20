@@ -8,6 +8,8 @@ see examples/README.md for the preparation story. Run from this directory:
 Requires AmberTools on PATH (conda install -c conda-forge ambertools).
 """
 
+from __future__ import annotations
+
 import logging
 from pathlib import Path
 
@@ -20,7 +22,7 @@ PREPARED_PDB = HERE / "data" / "trypsin_ben_prepared.pdb"
 BEN_SDF = HERE / "data" / "benzamidinium.sdf"
 
 
-def main():
+def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 
     # Step 1: build the force-field XML for everything amber14 cannot match.

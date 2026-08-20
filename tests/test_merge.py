@@ -5,7 +5,10 @@ easy to lose here is *why* two sections sometimes have to stay apart - see the
 ordering test.
 """
 
+from __future__ import annotations
+
 import xml.etree.ElementTree as ET
+from pathlib import Path
 
 import pytest
 
@@ -14,6 +17,7 @@ pytest.importorskip("openmm")
 from openmm import app
 
 from forcefill import merge_ffxml
+from forcefill._spec import PathLike
 
 #: Amber writes the 1-4 Coulomb scale as 5/6 in full precision; openmmforcefields
 #: truncates it. The same number, and merging must not care.
@@ -21,22 +25,22 @@ AMBER_SCALE = "0.8333333333333334"
 SMIRNOFF_SCALE = "0.8333333333"
 
 
-def _write(tmp_path, name, body):
+def _write(tmp_path: Path, name: str, body: str) -> Path:
     path = tmp_path / name
     path.write_text(f"<ForceField>\n{body}\n</ForceField>\n")
     return path
 
 
-def _types(*names, element="C", mass="12.011"):
+def _types(*names: str, element: str = "C", mass: str = "12.011") -> str:
     inner = "".join(f'<Type name="{n}" class="{n}" element="{element}" mass="{mass}"/>' for n in names)
     return f"<AtomTypes>{inner}</AtomTypes>"
 
 
-def _residue(name, type_name):
+def _residue(name: str, type_name: str) -> str:
     return f'<Residues><Residue name="{name}"><Atom name="C1" type="{type_name}" charge="0.0"/></Residue></Residues>'
 
 
-def _nonbonded(scale, class_name):
+def _nonbonded(scale: str, class_name: str) -> str:
     return (
         f'<NonbondedForce coulomb14scale="{scale}" lj14scale="0.5">'
         '<UseAttributeFromResidue name="charge"/>'
@@ -45,11 +49,11 @@ def _nonbonded(scale, class_name):
     )
 
 
-def _sections(path):
+def _sections(path: PathLike) -> list[tuple[str, str | None]]:
     return [(child.tag, child.attrib.get("ordering")) for child in ET.parse(str(path)).getroot()]
 
 
-def test_merges_two_documents(tmp_path):
+def test_merges_two_documents(tmp_path: Path) -> None:
     a = _write(tmp_path, "a.xml", _types("ta") + _residue("AAA", "ta"))
     b = _write(tmp_path, "b.xml", _types("tb") + _residue("BBB", "tb"))
     out = merge_ffxml([a, b], tmp_path / "merged.xml")
@@ -60,7 +64,7 @@ def test_merges_two_documents(tmp_path):
     assert sorted(app.ForceField(out)._templates) == ["AAA", "BBB"]
 
 
-def test_folds_sections_whose_scales_agree_to_within_tolerance(tmp_path):
+def test_folds_sections_whose_scales_agree_to_within_tolerance(tmp_path: Path) -> None:
     # Merging these into one section is what lets a GAFF and a SMIRNOFF ligand
     # share an output file at all.
     a = _write(tmp_path, "a.xml", _types("ta") + _residue("AAA", "ta") + _nonbonded(AMBER_SCALE, "ta"))
@@ -75,7 +79,7 @@ def test_folds_sections_whose_scales_agree_to_within_tolerance(tmp_path):
     app.ForceField(out)
 
 
-def test_keeps_sections_apart_when_their_scales_really_differ(tmp_path):
+def test_keeps_sections_apart_when_their_scales_really_differ(tmp_path: Path) -> None:
     a = _write(tmp_path, "a.xml", _types("ta") + _residue("AAA", "ta") + _nonbonded("0.5", "ta"))
     b = _write(tmp_path, "b.xml", _types("tb") + _residue("BBB", "tb") + _nonbonded("1.0", "tb"))
     out = merge_ffxml([a, b], tmp_path / "merged.xml")
@@ -87,7 +91,7 @@ def test_keeps_sections_apart_when_their_scales_really_differ(tmp_path):
         app.ForceField(out)
 
 
-def test_torsion_sections_with_different_ordering_stay_separate(tmp_path):
+def test_torsion_sections_with_different_ordering_stay_separate(tmp_path: Path) -> None:
     # OpenMM reads `ordering` per <Improper> at parse time, so merging a GAFF
     # section (no ordering) with a SMIRNOFF one would silently reinterpret every
     # GAFF improper under the smirnoff convention.
@@ -109,40 +113,40 @@ def test_torsion_sections_with_different_ordering_stay_separate(tmp_path):
     assert _sections(out).count(("PeriodicTorsionForce", "smirnoff")) == 1
 
 
-def test_identical_atom_types_are_deduplicated(tmp_path):
+def test_identical_atom_types_are_deduplicated(tmp_path: Path) -> None:
     a = _write(tmp_path, "a.xml", _types("shared") + _residue("AAA", "shared"))
     b = _write(tmp_path, "b.xml", _types("shared") + _residue("BBB", "shared"))
     out = merge_ffxml([a, b], tmp_path / "merged.xml")
     assert len(ET.parse(out).getroot().findall("./AtomTypes/Type")) == 1
 
 
-def test_conflicting_atom_type_is_refused(tmp_path):
+def test_conflicting_atom_type_is_refused(tmp_path: Path) -> None:
     a = _write(tmp_path, "a.xml", _types("shared", element="C", mass="12.011"))
     b = _write(tmp_path, "b.xml", _types("shared", element="N", mass="14.007"))
     with pytest.raises(ValueError, match="defines type 'shared'"):
         merge_ffxml([a, b], tmp_path / "merged.xml")
 
 
-def test_duplicate_residue_name_is_refused(tmp_path):
+def test_duplicate_residue_name_is_refused(tmp_path: Path) -> None:
     a = _write(tmp_path, "a.xml", _types("ta") + _residue("SAME", "ta"))
     b = _write(tmp_path, "b.xml", _types("tb") + _residue("SAME", "tb"))
     with pytest.raises(ValueError, match="already defines"):
         merge_ffxml([a, b], tmp_path / "merged.xml")
 
 
-def test_rejects_a_document_that_is_not_a_forcefield(tmp_path):
+def test_rejects_a_document_that_is_not_a_forcefield(tmp_path: Path) -> None:
     bad = tmp_path / "bad.xml"
     bad.write_text("<NotAForceField/>\n")
     with pytest.raises(ValueError, match="not an OpenMM force-field XML"):
         merge_ffxml([bad], tmp_path / "merged.xml")
 
 
-def test_rejects_an_empty_file_list(tmp_path):
+def test_rejects_an_empty_file_list(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="at least one"):
         merge_ffxml([], tmp_path / "merged.xml")
 
 
-def test_creates_the_output_directory(tmp_path):
+def test_creates_the_output_directory(tmp_path: Path) -> None:
     a = _write(tmp_path, "a.xml", _types("ta") + _residue("AAA", "ta"))
     out = merge_ffxml([a], tmp_path / "nested" / "deeper" / "merged.xml")
     assert (tmp_path / "nested" / "deeper" / "merged.xml").is_file()

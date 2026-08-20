@@ -4,7 +4,10 @@ Hermetic: the force fields come from the committed AmberTools fixtures and from
 hand-written XML, so no executable is needed.
 """
 
+from __future__ import annotations
+
 import math
+from pathlib import Path
 
 import pytest
 
@@ -41,7 +44,7 @@ _LIG_TEMPLATE_XML = """<ForceField>
 """
 
 
-def _write_lig_xml(tmp_path, complete=True):
+def _write_lig_xml(tmp_path: Path, complete: bool = True) -> tuple[Path, app.ForceField]:
     xml = tmp_path / "lig.xml"
     xml.write_text(
         _LIG_TEMPLATE_XML.format(
@@ -52,14 +55,14 @@ def _write_lig_xml(tmp_path, complete=True):
     return xml, app.ForceField(str(xml))
 
 
-def _methanol_ffxml(tmp_path):
+def _methanol_ffxml(tmp_path: Path) -> str:
     """A real, fully parameterized LIG force field, assembled from the committed fixtures."""
     return amber.assemble_openmm_ffxml(
         {"LIG": DATA / "methanol.mol2"}, [DATA / "methanol.frcmod"], tmp_path / "methanol_ff.xml"
     )
 
 
-def test_minimization_result_energy_change():
+def test_minimization_result_energy_change() -> None:
     result = checks.MinimizationResult(n_atoms=6, initial_energy=22.0, final_energy=19.0, max_force=6.0)
     assert result.energy_change == pytest.approx(-3.0)
 
@@ -67,12 +70,12 @@ def test_minimization_result_energy_change():
 # -- per-residue validation ------------------------------------------------
 
 
-def test_validate_parameterized_residues_ok(tmp_path):
+def test_validate_parameterized_residues_ok(tmp_path: Path) -> None:
     xml, ff = _write_lig_xml(tmp_path)
     checks._validate_parameterized_residues({"LIG": methanol_residue()}, ff, [str(xml)])
 
 
-def test_validate_parameterized_residues_detects_mismatch(tmp_path):
+def test_validate_parameterized_residues_detects_mismatch(tmp_path: Path) -> None:
     # Template lacks the hydroxyl hydrogen -> graph mismatch -> no template
     # matches the actual residue.
     xml, ff = _write_lig_xml(tmp_path, complete=False)
@@ -80,13 +83,13 @@ def test_validate_parameterized_residues_detects_mismatch(tmp_path):
         checks._validate_parameterized_residues({"LIG": methanol_residue()}, ff, [str(xml)])
 
 
-def test_validate_forcefield_xml_accepts_prebuilt_forcefield(tmp_path):
+def test_validate_forcefield_xml_accepts_prebuilt_forcefield(tmp_path: Path) -> None:
     xml, ff = _write_lig_xml(tmp_path)
     residue = methanol_residue()
     checks.validate_forcefield_xml(residue.chain.topology, xml, base_forcefield=(), forcefield=ff)
 
 
-def test_validate_forcefield_xml_reports_failure(tmp_path):
+def test_validate_forcefield_xml_reports_failure(tmp_path: Path) -> None:
     xml, _ff = _write_lig_xml(tmp_path, complete=False)
     residue = methanol_residue()
     with pytest.raises(RuntimeError, match="Validation failed"):
@@ -100,7 +103,7 @@ def test_validate_forcefield_xml_reports_failure(tmp_path):
 # energy would be a trivially finite zero.
 
 
-def test_minimize_reports_energies_and_forces(tmp_path):
+def test_minimize_reports_energies_and_forces(tmp_path: Path) -> None:
     residue = methanol_residue()
     result = checks.minimize_with_forcefield_xml(
         residue.chain.topology, methanol_positions(), _methanol_ffxml(tmp_path), base_forcefield=()
@@ -115,7 +118,7 @@ def test_minimize_reports_energies_and_forces(tmp_path):
     assert result.max_force > 0
 
 
-def test_minimize_detects_nonfinite_energy(tmp_path):
+def test_minimize_detects_nonfinite_energy(tmp_path: Path) -> None:
     # Superpose O1 on C1: the H-C1-O1 angle term is then undefined and the
     # potential energy comes back NaN, which createSystem alone never notices.
     collapsed = list(METHANOL_XYZ)
@@ -128,14 +131,14 @@ def test_minimize_detects_nonfinite_energy(tmp_path):
     assert "before minimizing" in str(excinfo.value)
 
 
-def test_minimize_reports_template_mismatch(tmp_path):
+def test_minimize_reports_template_mismatch(tmp_path: Path) -> None:
     xml, _ff = _write_lig_xml(tmp_path, complete=False)  # template lacks the hydroxyl hydrogen
     residue = methanol_residue()
     with pytest.raises(RuntimeError, match="Minimization failed"):
         checks.minimize_with_forcefield_xml(residue.chain.topology, methanol_positions(), xml, base_forcefield=())
 
 
-def test_minimize_names_the_topology_it_failed_on(tmp_path):
+def test_minimize_names_the_topology_it_failed_on(tmp_path: Path) -> None:
     # A multi-residue topology is named by size rather than by residue, and the
     # untemplated GLY is what makes it fail.
     pdb = app.PDBFile(str(write_methanol_pdb(tmp_path / "in.pdb", broken_gly=True)))
@@ -144,7 +147,7 @@ def test_minimize_names_the_topology_it_failed_on(tmp_path):
     assert "the topology (10 atoms, 2 residues)" in str(excinfo.value)
 
 
-def test_minimize_reports_unknown_platform(tmp_path):
+def test_minimize_reports_unknown_platform(tmp_path: Path) -> None:
     residue = methanol_residue()
     with pytest.raises(RuntimeError, match="Minimization failed") as excinfo:
         checks.minimize_with_forcefield_xml(
@@ -157,7 +160,7 @@ def test_minimize_reports_unknown_platform(tmp_path):
     assert "Bogus" in str(excinfo.value)
 
 
-def test_minimize_rejects_settings_that_would_silently_do_nothing(tmp_path):
+def test_minimize_rejects_settings_that_would_silently_do_nothing(tmp_path: Path) -> None:
     # OpenMM accepts a negative tolerance and then minimizes nothing at all,
     # which would leave this check reporting success without having run.
     residue = methanol_residue()
@@ -168,7 +171,7 @@ def test_minimize_rejects_settings_that_would_silently_do_nothing(tmp_path):
         checks.minimize_with_forcefield_xml(*args, base_forcefield=(), max_iterations=-5)
 
 
-def test_minimize_accepts_prebuilt_forcefield(tmp_path):
+def test_minimize_accepts_prebuilt_forcefield(tmp_path: Path) -> None:
     xml = _methanol_ffxml(tmp_path)
     residue = methanol_residue()
     result = checks.minimize_with_forcefield_xml(
