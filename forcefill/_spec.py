@@ -37,6 +37,10 @@ __all__ = [
 
 PathLike = str | os.PathLike
 
+#: A SMIRNOFF force field: an installed release name, a path to an OFFXML file,
+#: or a sequence of either layered left to right.
+ForceFieldSelection = str | os.PathLike | Sequence[str | os.PathLike]
+
 #: Base force field used to decide what counts as "non-standard", and loaded
 #: underneath the generated XML for the validation and minimization checks.
 DEFAULT_BASE_FORCEFIELD = ("amber14-all.xml", "amber14/tip3p.xml")
@@ -60,7 +64,8 @@ CHARMM_FILE_SUFFIXES = (".str", ".rtf", ".top", ".prm", ".par", ".inp")
 
 #: SMIRNOFF release used when a spec does not name one. Pinned rather than
 #: "latest": the version is part of the science, and a silent upgrade underneath
-#: a saved XML would be invisible in the output.
+#: a saved XML would be invisible in the output. A spec may name a different
+#: release, or one or more OFFXML files - see :func:`normalize_forcefield`.
 DEFAULT_SMIRNOFF_FORCEFIELD = "openff-2.2.1"
 
 #: Valid ``atom_type`` values: each names a GAFF parameter database ({atom_type}.dat).
@@ -75,6 +80,24 @@ def check_choice(value: str, valid: Sequence[str], label: str) -> None:
     """Raise ValueError early for a typo'd option instead of a late, cryptic failure."""
     if value not in valid:
         raise ValueError(f"{label}={value!r} is not one of {list(valid)}")
+
+
+def normalize_forcefield(value: ForceFieldSelection, label: str) -> tuple[str, ...]:
+    """Normalize a SMIRNOFF force-field selection to a non-empty tuple of strings.
+
+    A selection is either an installed release name (``"openff-2.2.1"``) or a
+    path to an OFFXML file - openmmforcefields takes both through the same
+    argument, and a sequence layers them left to right, which is how a
+    bespoke-torsions-only file is stacked on top of a stock release.
+    """
+    entries = (value,) if isinstance(value, str | os.PathLike) else tuple(value)
+    if not entries:
+        raise ValueError(
+            f"{label} is empty. Name a SMIRNOFF release (e.g. "
+            f"{DEFAULT_SMIRNOFF_FORCEFIELD!r}) or give the path to an OFFXML "
+            "file; leave it unset to inherit the default."
+        )
+    return tuple(str(entry) for entry in entries)
 
 
 def check_charmm_suffix(path: PathLike) -> None:
@@ -125,8 +148,13 @@ class LigandSpec:
             after the call-level ones.
         backend: ``"gaff"``, ``"smirnoff"`` or ``"charmm"``; ``None`` inherits.
             smirnoff needs *file* or *smiles*, charmm needs *charmm_files*.
-        forcefield: SMIRNOFF release for the ``smirnoff`` backend, e.g.
-            ``"openff-2.2.1"``; ``None`` inherits.
+        forcefield: SMIRNOFF force field for the ``smirnoff`` backend: an
+            installed release name (``"openff-2.2.1"``), a path to an OFFXML
+            file - a bespoke one from
+            `BespokeFit <https://github.com/openforcefield/openff-bespokefit>`_,
+            say - or a sequence of either, layered left to right. ``None``
+            inherits. An OFFXML must be *unconstrained*; see
+            :mod:`forcefill.smirnoff`.
         charmm_files: CHARMM topology/parameter files for the ``charmm`` backend
             - typically one ``.str`` from ParamChem or the cgenff program, plus
             any extra ``.rtf``/``.prm``. Appended after the call-level ones.
@@ -140,7 +168,7 @@ class LigandSpec:
     charge_method: str | None = None
     antechamber_args: Sequence[str] = ()
     backend: str | None = None
-    forcefield: str | None = None
+    forcefield: ForceFieldSelection | None = None
     charmm_files: Sequence[PathLike] = ()
 
     def __post_init__(self) -> None:
@@ -160,6 +188,8 @@ class LigandSpec:
             raise ValueError(f"multiplicity={self.multiplicity!r} must be >= 1.")
         for path in self.charmm_files:
             check_charmm_suffix(path)
+        if self.forcefield is not None:
+            object.__setattr__(self, "forcefield", normalize_forcefield(self.forcefield, "LigandSpec.forcefield"))
         # Tuples, so a caller's list cannot mutate underneath a frozen dataclass.
         object.__setattr__(self, "antechamber_args", tuple(self.antechamber_args))
         object.__setattr__(self, "charmm_files", tuple(self.charmm_files))
@@ -183,8 +213,19 @@ class ResolvedSpec:
     charge_method: str = "bcc"
     antechamber_args: tuple[str, ...] = ()
     backend: str = "gaff"
-    forcefield: str = DEFAULT_SMIRNOFF_FORCEFIELD
+    forcefield: tuple[str, ...] = (DEFAULT_SMIRNOFF_FORCEFIELD,)
     charmm_files: tuple[PathLike, ...] = ()
+
+    def __post_init__(self) -> None:
+        """Normalize ``forcefield``, which a bare string satisfies without being one.
+
+        ``"openff-2.2.1"`` is a perfectly good ``Sequence[str]``, so neither the
+        annotation nor a type checker rejects it - and it would then be iterated
+        one character at a time. Normalizing here means every construction site,
+        including the ones in tests, gets the tuple the rest of the pipeline
+        assumes.
+        """
+        object.__setattr__(self, "forcefield", normalize_forcefield(self.forcefield, "ResolvedSpec.forcefield"))
 
     @property
     def has_explicit_bonds(self) -> bool:
@@ -213,7 +254,7 @@ class _Defaults:
     charge_method: str = "bcc"
     antechamber_args: tuple[str, ...] = ()
     backend: str = "gaff"
-    forcefield: str = DEFAULT_SMIRNOFF_FORCEFIELD
+    forcefield: ForceFieldSelection = DEFAULT_SMIRNOFF_FORCEFIELD
     charmm_files: tuple[PathLike, ...] = ()
     #: Residue names to build specs for. Everything outside this set is reported
     #: by the caller as an override that matched nothing.
@@ -274,6 +315,7 @@ def resolve_specs(
     multiplicities = dict(multiplicities or {})
     residue_files = dict(residue_files or {})
     defaults = defaults or _Defaults()
+    default_forcefield = normalize_forcefield(defaults.forcefield, "smirnoff_forcefield")
 
     resolved: dict[str, ResolvedSpec] = {}
     for name in sorted(defaults.names):
@@ -326,7 +368,12 @@ def resolve_specs(
             charge_method=spec.charge_method or defaults.charge_method,
             antechamber_args=(*defaults.antechamber_args, *spec.antechamber_args),
             backend=backend,
-            forcefield=spec.forcefield or defaults.forcefield,
+            # Idempotent: LigandSpec.__post_init__ already normalized its own,
+            # but doing it here too is what makes the tuple visible to a reader
+            # (and a type checker) at the point ResolvedSpec is built.
+            forcefield=normalize_forcefield(spec.forcefield, "LigandSpec.forcefield")
+            if spec.forcefield
+            else default_forcefield,
             charmm_files=charmm_files,
         )
     return resolved

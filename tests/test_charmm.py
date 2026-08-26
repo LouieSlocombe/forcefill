@@ -29,12 +29,13 @@ from openmm import app, unit
 
 from forcefill import (
     CHARMM_BASE_FORCEFIELD,
+    DEFAULT_BASE_FORCEFIELD,
     LigandSpec,
     build_forcefield_xml,
     build_ligand_xml,
     charmm,
 )
-from forcefill._pipeline import check_backends_match_base
+from forcefill._pipeline import SmirnoffProfile, check_backends_match_base
 from forcefill._spec import ResolvedSpec
 from forcefill.preflight import preflight_specs
 from tests.helpers import (
@@ -360,6 +361,48 @@ def test_charmm_mixed_with_gaff_is_refused() -> None:
     specs = {"LIG": charmm_spec(), "BEN": ResolvedSpec(name="BEN", backend="gaff")}
     with pytest.raises(ValueError, match="both CHARMM and Amber-family"):
         check_backends_match_base(specs, CHARMM_BASE_FORCEFIELD)
+
+
+def _smirnoff_spec(name: str, offxml: str) -> ResolvedSpec:
+    return ResolvedSpec(name=name, backend="smirnoff", smiles="CO", forcefield=offxml)
+
+
+def _profile(scales: tuple[float, float]) -> SmirnoffProfile:
+    # The gate reads nothing but the scales; the force field itself is only
+    # carried through for the preflight checks that run much later.
+    return SmirnoffProfile(forcefield=None, scales=scales)
+
+
+def test_a_custom_offxml_is_measured_rather_than_assumed() -> None:
+    # Every stock release scales 0.8333/0.5, but an arbitrary OFFXML need not,
+    # and assuming it would puts the one number this gate checks back in a literal.
+    specs = {"LIG": _smirnoff_spec("LIG", "odd.offxml")}
+    profiles = {("odd.offxml",): _profile((1.0, 1.0))}
+    with pytest.raises(ValueError, match=r"1-4 scaling 1/1"):
+        check_backends_match_base(specs, ("amber14-all.xml", "amber14/tip3p.xml"), profiles)
+    # ...and against the base that does declare 1.0/1.0, the same pair is fine.
+    check_backends_match_base(specs, CHARMM_BASE_FORCEFIELD, profiles)
+
+
+def test_custom_offxmls_that_disagree_with_each_other_are_refused() -> None:
+    specs = {"LIG": _smirnoff_spec("LIG", "a.offxml"), "BEN": _smirnoff_spec("BEN", "b.offxml")}
+    profiles = {("a.offxml",): _profile((0.8333333333333334, 0.5)), ("b.offxml",): _profile((1.0, 1.0))}
+    with pytest.raises(ValueError, match="more than one 1-4 scaling"):
+        check_backends_match_base(specs, ("amber14-all.xml", "amber14/tip3p.xml"), profiles)
+
+
+def test_a_custom_offxml_disagreeing_with_a_gaff_ligand_is_refused() -> None:
+    # They would be merged into one XML declaring both conventions, which OpenMM
+    # rejects at load time with nothing to say about which ligand caused it.
+    specs = {"LIG": _smirnoff_spec("LIG", "odd.offxml"), "BEN": ResolvedSpec(name="BEN", backend="gaff")}
+    with pytest.raises(ValueError, match="more than one 1-4 scaling"):
+        check_backends_match_base(specs, DEFAULT_BASE_FORCEFIELD, {("odd.offxml",): _profile((1.0, 1.0))})
+
+
+def test_a_stock_scaled_custom_offxml_passes_alongside_gaff() -> None:
+    specs = {"LIG": _smirnoff_spec("LIG", "bespoke.offxml"), "BEN": ResolvedSpec(name="BEN", backend="gaff")}
+    profiles = {("bespoke.offxml",): _profile((0.8333333333333334, 0.5))}
+    check_backends_match_base(specs, DEFAULT_BASE_FORCEFIELD, profiles)
 
 
 def test_matching_combinations_pass() -> None:

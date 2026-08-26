@@ -21,6 +21,7 @@ from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from openmm import app, unit
 
@@ -31,6 +32,9 @@ from .clean_structure import CleaningResult
 from .merge import _SCALE_TOLERANCE, merge_ffxml
 from .topology import extract_residue_to_pdb
 
+if TYPE_CHECKING:
+    from openff.toolkit import ForceField
+
 log = logging.getLogger(__name__)
 
 __all__ = ["ParameterizationResult"]
@@ -38,7 +42,9 @@ __all__ = ["ParameterizationResult"]
 #: 1-4 scaling each backend's output declares, compared against the base force
 #: field by :func:`check_backends_match_base`. The Amber pair is what ParmEd
 #: writes from ``gaff*.dat`` and openmmforcefields for SMIRNOFF; the CHARMM pair
-#: is what ParmEd writes from a ``CharmmParameterSet``.
+#: is what ParmEd writes from a ``CharmmParameterSet``. The smirnoff entry holds
+#: only for a stock release - a custom OFFXML is measured instead, by
+#: :func:`prepare_smirnoff_backend`.
 _BACKEND_14_SCALES = {
     "gaff": (0.8333333333333334, 0.5),
     "smirnoff": (0.8333333333333334, 0.5),
@@ -94,6 +100,16 @@ class ResidueArtifacts:
     frcmod: str | None = None
 
 
+@dataclass
+class SmirnoffProfile:
+    """A custom SMIRNOFF force field, loaded once and measured rather than assumed."""
+
+    #: The loaded force field, reused by the preflight checks rather than reread.
+    forcefield: ForceField
+    #: ``(coulomb, lj)`` 1-4 scaling it declares.
+    scales: tuple[float, float]
+
+
 def prepare_gaff_backend(specs: Mapping[str, ResolvedSpec], atom_type: str) -> str | None:
     """Check the gaff backend can run and return the GAFF database, or None if unused.
 
@@ -109,7 +125,38 @@ def prepare_gaff_backend(specs: Mapping[str, ResolvedSpec], atom_type: str) -> s
     return gaff_dat
 
 
-def check_backends_match_base(specs: Mapping[str, ResolvedSpec], base_forcefield: Sequence[str]) -> None:
+def prepare_smirnoff_backend(specs: Mapping[str, ResolvedSpec]) -> dict[tuple[str, ...], SmirnoffProfile]:
+    """Load every custom SMIRNOFF force field once, before anything expensive runs.
+
+    Called where :func:`prepare_gaff_backend` is - before the working directory
+    exists and before the first ligand is read - so a mistyped OFFXML path fails
+    immediately rather than after the ligands ahead of it have had their charges
+    assigned. Stock release names are trusted and not loaded.
+
+    Returns:
+        ``{selection: profile}`` for the custom selections only, empty when every
+        smirnoff spec names a release (and when no spec uses the backend at all).
+    """
+    profiles: dict[tuple[str, ...], SmirnoffProfile] = {}
+    for spec in specs.values():
+        if spec.backend != "smirnoff" or not smirnoff.is_custom_forcefield(spec.forcefield):
+            continue
+        if spec.forcefield in profiles:
+            continue
+        forcefield = smirnoff.load_forcefield(spec.forcefield)
+        profiles[spec.forcefield] = SmirnoffProfile(
+            forcefield=forcefield,
+            scales=smirnoff.forcefield_14_scales(forcefield),
+        )
+        log.info("Loaded custom SMIRNOFF force field: %s", ", ".join(spec.forcefield))
+    return profiles
+
+
+def check_backends_match_base(
+    specs: Mapping[str, ResolvedSpec],
+    base_forcefield: Sequence[str],
+    smirnoff_profiles: Mapping[tuple[str, ...], SmirnoffProfile] | None = None,
+) -> None:
     """Refuse a combination OpenMM could never load, before anything expensive runs.
 
     Amber-family force fields scale 1-4 interactions by 0.8333/0.5 and CHARMM by
@@ -123,7 +170,17 @@ def check_backends_match_base(specs: Mapping[str, ResolvedSpec], base_forcefield
           validated against.
 
     The base convention is read from the loaded force field, so a custom one is
-    checked as accurately as the two presets.
+    checked as accurately as the two presets. So is the backend's, when
+    *smirnoff_profiles* carries a custom OFFXML: every stock SMIRNOFF release
+    scales 0.8333/0.5, but an arbitrary one need not, and assuming it would put
+    the one number this function exists to check back into a literal.
+
+    Args:
+        specs: Resolved specs, keyed by residue name.
+        base_forcefield: The base the generated XML will be loaded with.
+        smirnoff_profiles: Custom force fields from
+            :func:`prepare_smirnoff_backend`, whose measured scales are used in
+            place of the stock literal.
     """
     backends = {spec.backend for spec in specs.values()}
     if not backends:
@@ -141,8 +198,11 @@ def check_backends_match_base(specs: Mapping[str, ResolvedSpec], base_forcefield
         )
 
     # Only one family is in play now, and gaff and smirnoff share a convention,
-    # so any one backend answers for all of them.
+    # so any one backend answers for all of them - unless a custom OFFXML says
+    # otherwise, in which case it answers for itself.
     expected = _BACKEND_14_SCALES["charmm" if charmm_names else "gaff"]
+    if not charmm_names:
+        expected = _custom_smirnoff_scales(specs, smirnoff_profiles or {}, expected)
     actual = charmm.base_14_scales(base_forcefield)
     # None: the base force field declares no non-bonded terms at all, so there is
     # nothing for the generated XML to contradict.
@@ -156,6 +216,35 @@ def check_backends_match_base(specs: Mapping[str, ResolvedSpec], base_forcefield
         "cannot load the two together, so the generated XML would be unusable "
         f"even though it built. Pass base_forcefield={list(wanted)}, or switch "
         "backend to match the base force field you want."
+    )
+
+
+def _custom_smirnoff_scales(
+    specs: Mapping[str, ResolvedSpec],
+    profiles: Mapping[tuple[str, ...], SmirnoffProfile],
+    fallback: tuple[float, float],
+) -> tuple[float, float]:
+    """The 1-4 scaling the smirnoff specs will actually produce, or *fallback*.
+
+    Custom force fields that disagree with each other, or with the stock scaling
+    a gaff or stock-smirnoff ligand in the same build produces, are refused here:
+    they would be merged into one XML declaring two different conventions, which
+    OpenMM rejects at load time with nothing to say about which ligand caused it.
+    """
+    measured = {profiles[spec.forcefield].scales: spec.name for spec in specs.values() if spec.forcefield in profiles}
+    if not measured:
+        return fallback
+    # A stock-scaled ligand in the same build has to be accounted for too.
+    if any(spec.forcefield not in profiles for spec in specs.values()):
+        measured.setdefault(fallback, "the gaff/stock-smirnoff ligands")
+    if len(measured) == 1:
+        return next(iter(measured))
+    described = ", ".join(f"{name} ({s[0]:g}/{s[1]:g})" for s, name in sorted(measured.items()))
+    raise ValueError(
+        "The ligands in this build declare more than one 1-4 scaling "
+        f"(coulomb/lj): {described}. They would be merged into one XML that says "
+        "both, which OpenMM refuses to load. Build them separately, or use force "
+        "fields that agree."
     )
 
 

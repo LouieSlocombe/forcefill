@@ -5,7 +5,9 @@ Hermetic: pure data, no openmm and no AmberTools.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable, Mapping
+from pathlib import Path
 
 import pytest
 
@@ -96,7 +98,7 @@ def test_resolve_fills_in_call_level_defaults() -> None:
     assert resolved.atom_type == "gaff"
     assert resolved.charge_method == "bcc"
     assert resolved.backend == "gaff"
-    assert resolved.forcefield == DEFAULT_SMIRNOFF_FORCEFIELD
+    assert resolved.forcefield == (DEFAULT_SMIRNOFF_FORCEFIELD,)
 
 
 def test_resolve_spec_overrides_the_default() -> None:
@@ -226,3 +228,52 @@ def test_resolve_leaves_shared_charmm_files_off_another_backend() -> None:
     )
     assert specs["LIG"].charmm_files == ()
     assert not specs["LIG"].has_source
+
+
+# --------------------------------------------------------------------------
+# forcefield: a release name, an OFFXML path, or several layered
+# --------------------------------------------------------------------------
+
+
+def test_a_bare_forcefield_string_becomes_a_one_entry_tuple() -> None:
+    # "openff-2.2.1" is itself a valid Sequence[str], so nothing but this
+    # normalization stops it being iterated one character at a time.
+    assert LigandSpec(forcefield="openff-2.2.1").forcefield == ("openff-2.2.1",)
+
+
+def test_a_forcefield_path_is_kept_as_given() -> None:
+    spec = LigandSpec(smiles="CO", forcefield="/tmp/lig_bespoke.offxml")
+    assert spec.forcefield == ("/tmp/lig_bespoke.offxml",)
+
+
+def test_forcefield_entries_are_layered_in_order() -> None:
+    spec = LigandSpec(smiles="CO", forcefield=["openff-2.2.1", "bespoke.offxml"])
+    assert spec.forcefield == ("openff-2.2.1", "bespoke.offxml")
+
+
+def test_a_forcefield_path_object_is_stringified() -> None:
+    spec = LigandSpec(smiles="CO", forcefield=Path("lig.offxml"))
+    assert spec.forcefield == ("lig.offxml",)
+
+
+def test_an_empty_forcefield_is_refused() -> None:
+    # Silently inheriting the default here would hide a caller that meant to
+    # pass a file and computed an empty list instead.
+    with pytest.raises(ValueError, match=re.escape("LigandSpec.forcefield is empty")):
+        LigandSpec(forcefield=[])
+
+
+def test_a_per_ligand_forcefield_overrides_the_call_level_one() -> None:
+    specs = resolve_specs(
+        {"LIG": LigandSpec(smiles="CO", forcefield="bespoke.offxml")},
+        defaults=_defaults(backend="smirnoff"),
+    )
+    assert specs["LIG"].forcefield == ("bespoke.offxml",)
+
+
+def test_a_call_level_forcefield_sequence_reaches_every_spec() -> None:
+    specs = resolve_specs(
+        {"LIG": LigandSpec(smiles="CO")},
+        defaults=_defaults(backend="smirnoff", forcefield=("openff-2.2.1", "bespoke.offxml")),
+    )
+    assert specs["LIG"].forcefield == ("openff-2.2.1", "bespoke.offxml")

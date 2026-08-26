@@ -39,6 +39,7 @@ from ._spec import (
     CHARMM_FILE_SUFFIXES,
     DEFAULT_BASE_FORCEFIELD,
     DEFAULT_SMIRNOFF_FORCEFIELD,
+    ForceFieldSelection,
     LigandSpec,
     PathLike,
     ResolvedSpec,
@@ -142,7 +143,7 @@ def build_ligand_xml(
     backend: str = "gaff",
     atom_type: str = "gaff2",
     charge_method: str = "bcc",
-    smirnoff_forcefield: str = DEFAULT_SMIRNOFF_FORCEFIELD,
+    smirnoff_forcefield: ForceFieldSelection = DEFAULT_SMIRNOFF_FORCEFIELD,
     charmm_files: Sequence[PathLike] = (),
     workdir: PathLike | None = None,
     cleanup: bool = False,
@@ -171,7 +172,12 @@ def build_ligand_xml(
             per-ligand with ``LigandSpec(backend=...)``.
         atom_type: ``"gaff2"`` (default) or ``"gaff"``. gaff backend only.
         charge_method: antechamber charge method, default ``"bcc"``. gaff only.
-        smirnoff_forcefield: SMIRNOFF release for the smirnoff backend.
+        smirnoff_forcefield: SMIRNOFF force field for the smirnoff backend: an
+            installed release (default
+            :data:`~forcefill.DEFAULT_SMIRNOFF_FORCEFIELD`; see
+            ``forcefill.smirnoff.installed_smirnoff_forcefields()``), the path
+            to an OFFXML file such as a bespoke force field from BespokeFit, or
+            a sequence of either layered left to right.
         charmm_files: CHARMM topology/parameter files shared by every charmm
             ligand; per-ligand stream files go in
             ``LigandSpec(charmm_files=...)`` and are appended after these.
@@ -235,13 +241,16 @@ def build_ligand_xml(
     log.info("Ligands to parameterize: %s", sorted(specs))
 
     gaff_dat = _pipeline.prepare_gaff_backend(specs, atom_type)
-    _pipeline.check_backends_match_base(specs, base_forcefield)
+    smirnoff_profiles = _pipeline.prepare_smirnoff_backend(specs)
+    _pipeline.check_backends_match_base(specs, base_forcefield, smirnoff_profiles)
 
     minimizations: dict[str, MinimizationResult] = {}
     with _pipeline.working_directory(workdir, output_xml, prefix="ligand_ff_", cleanup=cleanup) as wd:
         # No structure to compare against, but the net charge and the geometry
         # are still read and checked before the first antechamber run.
-        specs = preflight_specs(specs, {}, None, wd, strict=strict, base_forcefield=base_forcefield)
+        specs = preflight_specs(
+            specs, {}, None, wd, strict=strict, base_forcefield=base_forcefield, smirnoff_profiles=smirnoff_profiles
+        )
 
         artifacts = _pipeline.parameterize_all(
             specs, {}, None, wd, gaff_dat=gaff_dat, timeout=timeout, base_forcefield=base_forcefield

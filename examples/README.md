@@ -21,6 +21,7 @@ Two more scripts cover the other entry points:
 ```bash
 python parameterize_ligand_standalone.py   # no structure: the ligand file is the input
 python parameterize_ligand_charmm.py       # no AmberTools, no toppar download
+python parameterize_ligand_bespoke.py      # a bespoke SMIRNOFF force field, and the checks on it
 ```
 
 The standalone script runs `build_ligand_xml` on the same
@@ -108,6 +109,7 @@ minimization for both.
 | `parameterize_ligand.py` | yes | The actual example: forcefill + OpenMM minimization and dynamics |
 | `parameterize_ligand_standalone.py` | yes | The ligand on its own, no PDB: both backends, then both merged |
 | `parameterize_ligand_charmm.py` | yes | The same ligand under CHARMM: converting a CGenFF stream file |
+| `parameterize_ligand_bespoke.py` | yes | A BespokeFit-shaped OFFXML through the smirnoff backend, plus the three refusals |
 | `data/trypsin_ben_prepared.pdb` | yes | Prepared complex: protonated protein/waters/benzamidinium + bond-less Ca²⁺ |
 | `data/benzamidinium.sdf` | yes | The ligand as drawn: bond orders, +1 charge, 3D hydrogens |
 | `data/benzamidinium_cgenff.str` | yes | The same ligand's CGenFF topology, in the format ParamChem returns |
@@ -115,6 +117,7 @@ minimization for both.
 | `ben_ff.xml`, `wd/` | no (generated) | Output of the example run |
 | `ben_standalone_*.xml`, `wd_standalone_*/` | no (generated) | Output of the standalone run |
 | `ben_charmm.xml`, `wd_charmm/` | no (generated) | Output of the CHARMM run |
+| `bespoke_work/` | no (generated) | Synthesized OFFXMLs and output of the bespoke run |
 
 `data/benzamidinium_cgenff.str` is not a `cgenff` run — the program is licensed
 and its output is not redistributable. Its atom types and charges are taken

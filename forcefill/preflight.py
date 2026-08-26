@@ -17,7 +17,10 @@ The reading and the checks live in :mod:`forcefill.ligand_files`; this module
 applies them to a set of specs. A charmm ligand gets the same two composition
 checks against its ``RESI`` block: the conversion is cheap, but a stream file
 written for a different protonation state than the structure holds is the same
-mistake. The post-parameterization checks are :mod:`forcefill.checks`.
+mistake. A smirnoff ligand given a custom OFFXML - a bespoke force field, say -
+gets two more from :mod:`forcefill.smirnoff`, both of which need the molecule
+and so cannot live in the earlier, structure-free gate. The
+post-parameterization checks are :mod:`forcefill.checks`.
 """
 
 from __future__ import annotations
@@ -26,12 +29,16 @@ import logging
 from collections import Counter
 from collections.abc import Mapping, Sequence
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from openmm import app, unit
 
-from . import charmm, ligand_files
+from . import charmm, ligand_files, smirnoff
 from ._spec import CHARMM_BASE_FORCEFIELD, ResolvedSpec
 from .topology import _residue_positions, extract_residue_to_pdb
+
+if TYPE_CHECKING:
+    from ._pipeline import SmirnoffProfile
 
 log = logging.getLogger(__name__)
 
@@ -134,6 +141,7 @@ def preflight_specs(
     *,
     strict: bool = True,
     base_forcefield: Sequence[str] = CHARMM_BASE_FORCEFIELD,
+    smirnoff_profiles: Mapping[tuple[str, ...], SmirnoffProfile] | None = None,
 ) -> dict[str, ResolvedSpec]:
     """Check and complete every spec before anything expensive runs.
 
@@ -149,10 +157,15 @@ def preflight_specs(
         strict: Raise on a composition or geometry fault rather than warn.
         base_forcefield: Used only by the charmm backend, to resolve the CGenFF
             atom types a stream file names into elements.
+        smirnoff_profiles: Custom SMIRNOFF force fields already loaded by
+            :func:`~forcefill._pipeline.prepare_smirnoff_backend`. A spec whose
+            force field appears here gets the two extra checks in
+            :mod:`forcefill.smirnoff`.
 
     Returns:
         ``{residue_name: ResolvedSpec}``, ready to parameterize.
     """
+    smirnoff_profiles = dict(smirnoff_profiles or {})
     out: dict[str, ResolvedSpec] = {}
     for name in sorted(specs):
         spec = specs[name]
@@ -185,5 +198,8 @@ def preflight_specs(
         if residue is not None:
             ligand_files.check_matches_residue(info, residue, name, strict=strict)
         ligand_files.check_geometry(info.positions, name, strict=strict)
-        out[name] = _apply_net_charge(spec, info)
+        spec = _apply_net_charge(spec, info)
+        if spec.forcefield in smirnoff_profiles:
+            smirnoff.check_custom_forcefield(spec, smirnoff_profiles[spec.forcefield].forcefield, strict=strict)
+        out[name] = spec
     return out

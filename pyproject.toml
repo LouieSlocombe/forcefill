@@ -7,7 +7,7 @@ name = "forcefill"
 # Bump on any API-visible change: openmmnqe installs this repo from git HEAD,
 # and this number is the only staleness signal an installed copy carries
 # (forcefill/__init__.py reads it back through the installed metadata).
-version = "0.1.0"
+version = "0.2.0"
 description = "Parameterize non-standard PDB residues (ligands, cofactors) into OpenMM force-field XML with AmberTools GAFF/AM1-BCC, OpenFF Sage or CHARMM CGenFF"
 readme = "README.md"
 license = "MIT"

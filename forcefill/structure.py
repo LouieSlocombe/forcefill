@@ -68,6 +68,7 @@ from ._spec import (
     CHARGE_METHODS,
     DEFAULT_BASE_FORCEFIELD,
     DEFAULT_SMIRNOFF_FORCEFIELD,
+    ForceFieldSelection,
     LigandSpec,
     PathLike,
     _Defaults,
@@ -104,7 +105,7 @@ def build_forcefield_xml(
     backend: str = "gaff",
     atom_type: str = "gaff2",
     charge_method: str = "bcc",
-    smirnoff_forcefield: str = DEFAULT_SMIRNOFF_FORCEFIELD,
+    smirnoff_forcefield: ForceFieldSelection = DEFAULT_SMIRNOFF_FORCEFIELD,
     charmm_files: Sequence[PathLike] = (),
     workdir: PathLike | None = None,
     cleanup: bool = False,
@@ -156,9 +157,12 @@ def build_forcefield_xml(
         atom_type: ``"gaff2"`` (default) or ``"gaff"``. gaff backend only.
         charge_method: antechamber charge method, default ``"bcc"`` (AM1-BCC).
             gaff backend only.
-        smirnoff_forcefield: SMIRNOFF release for the smirnoff backend, default
-            :data:`~forcefill.DEFAULT_SMIRNOFF_FORCEFIELD`. See
-            ``forcefill.smirnoff.installed_smirnoff_forcefields()``.
+        smirnoff_forcefield: SMIRNOFF force field for the smirnoff backend: an
+            installed release (default
+            :data:`~forcefill.DEFAULT_SMIRNOFF_FORCEFIELD`; see
+            ``forcefill.smirnoff.installed_smirnoff_forcefields()``), the path
+            to an OFFXML file such as a bespoke force field from BespokeFit, or
+            a sequence of either layered left to right.
         charmm_files: CHARMM topology/parameter files shared by every charmm
             ligand, e.g. an extra ``par_all36_cgenff.prm``. Per-ligand stream
             files go in ``LigandSpec(charmm_files=...)``, appended after these.
@@ -264,14 +268,23 @@ def build_forcefield_xml(
     # Fail early if the tools a backend needs are absent, or if the base force
     # field is one its output could never be loaded with.
     gaff_dat = _pipeline.prepare_gaff_backend(specs, atom_type)
-    _pipeline.check_backends_match_base(specs, base_forcefield)
+    smirnoff_profiles = _pipeline.prepare_smirnoff_backend(specs)
+    _pipeline.check_backends_match_base(specs, base_forcefield, smirnoff_profiles)
 
     minimizations: dict[str, MinimizationResult] = {}
     full_minimization: MinimizationResult | None = None
     with _pipeline.working_directory(workdir, output_xml, prefix="nonstandard_ff_", cleanup=cleanup) as wd:
         # Check everything before the first expensive call: AM1-BCC can take an
         # hour per ligand, so a mistake in the last must not cost the first.
-        specs = preflight_specs(specs, to_param, positions, wd, strict=strict, base_forcefield=base_forcefield)
+        specs = preflight_specs(
+            specs,
+            to_param,
+            positions,
+            wd,
+            strict=strict,
+            base_forcefield=base_forcefield,
+            smirnoff_profiles=smirnoff_profiles,
+        )
 
         artifacts = _pipeline.parameterize_all(
             specs, to_param, positions, wd, gaff_dat=gaff_dat, timeout=timeout, base_forcefield=base_forcefield
