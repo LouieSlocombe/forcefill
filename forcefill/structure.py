@@ -12,7 +12,8 @@ Pipeline:
 
        * standard residues merely missing atoms -> skipped (repair the structure
          with PDBFixer / ``Modeller.addHydrogens`` instead)
-       * monatomic species (ions) -> skipped (load an ion parameter file)
+       * monatomic species (ions) -> skipped (fix the name, or load a
+         parameter set that covers them)
        * residues covalently bonded to neighbours -> skipped (a polymer-linked
          residue needs capping and a consistent charge derivation, pyRED-style)
        * free-standing hetero molecules (ligands, cofactors) -> parameterized
@@ -20,7 +21,8 @@ Pipeline:
     3. Everything checkable is checked before anything expensive runs; see
        :mod:`forcefill.preflight`.
     4. Each unique residue goes through its backend: :mod:`forcefill.amber`,
-       :mod:`forcefill.smirnoff` or :mod:`forcefill.charmm`.
+       :mod:`forcefill.smirnoff`, :mod:`forcefill.espaloma` or
+       :mod:`forcefill.charmm`.
     5. The per-residue XMLs are combined into one.
     6. That XML is validated, and optionally minimized, by
        :mod:`forcefill.checks`.
@@ -60,13 +62,14 @@ from collections.abc import Mapping, Sequence
 
 from openmm import app
 
-from . import _pipeline
+from . import _pipeline, espaloma
 from ._pipeline import ParameterizationResult
 from ._spec import (
     ATOM_TYPES,
     BACKENDS,
     CHARGE_METHODS,
     DEFAULT_BASE_FORCEFIELD,
+    DEFAULT_ESPALOMA_FORCEFIELD,
     DEFAULT_SMIRNOFF_FORCEFIELD,
     ForceFieldSelection,
     LigandSpec,
@@ -78,9 +81,11 @@ from ._spec import (
 from .amber import DEFAULT_AMBERTOOLS_TIMEOUT
 from .checks import (
     MinimizationResult,
+    _expand_virtual_sites,
     _minimize_parameterized_residues,
     _validate_parameterized_residues,
     minimize_with_forcefield_xml,
+    residue_templates_with_virtual_sites,
     validate_forcefield_xml,
 )
 from .clean_structure import CleaningResult, clean_topology
@@ -106,6 +111,8 @@ def build_forcefield_xml(
     atom_type: str = "gaff2",
     charge_method: str = "bcc",
     smirnoff_forcefield: ForceFieldSelection = DEFAULT_SMIRNOFF_FORCEFIELD,
+    espaloma_forcefield: ForceFieldSelection = DEFAULT_ESPALOMA_FORCEFIELD,
+    espaloma_charge_method: str = espaloma.DEFAULT_ESPALOMA_CHARGE_METHOD,
     charmm_files: Sequence[PathLike] = (),
     workdir: PathLike | None = None,
     cleanup: bool = False,
@@ -147,11 +154,12 @@ def build_forcefield_xml(
             not re-perceive bond orders from geometry. The file must hold the
             *same* atoms and bonds (hydrogens included) as the PDB residue;
             *strict* checks that up front.
-        backend: ``"gaff"`` (default), ``"smirnoff"`` or ``"charmm"``. SMIRNOFF
-            assigns parameters from the chemical graph, so its ligands need a
-            ``file`` or ``smiles``; charmm needs ``charmm_files``. Set it per
-            ligand with ``LigandSpec(backend=...)`` to mix gaff and smirnoff.
-            CHARMM mixes with neither - it scales 1-4 interactions differently -
+        backend: ``"gaff"`` (default), ``"smirnoff"``, ``"charmm"`` or
+            ``"espaloma"``. SMIRNOFF and Espaloma assign parameters from the
+            chemical graph, so their ligands need a ``file`` or ``smiles``;
+            charmm needs ``charmm_files``. Set it per ligand with
+            ``LigandSpec(backend=...)`` to mix the Amber-family backends. CHARMM
+            mixes with none of them - it scales 1-4 interactions differently -
             and needs *base_forcefield* set to
             :data:`~forcefill.CHARMM_BASE_FORCEFIELD`.
         atom_type: ``"gaff2"`` (default) or ``"gaff"``. gaff backend only.
@@ -163,6 +171,14 @@ def build_forcefield_xml(
             ``forcefill.smirnoff.installed_smirnoff_forcefields()``), the path
             to an OFFXML file such as a bespoke force field from BespokeFit, or
             a sequence of either layered left to right.
+        espaloma_forcefield: Espaloma model for the espaloma backend: a name
+            (default :data:`~forcefill.DEFAULT_ESPALOMA_FORCEFIELD`; see
+            ``forcefill.espaloma.installed_espaloma_forcefields()``) or the path
+            to a ``.pt`` file. Always one, never a sequence. A name that is not
+            already cached in ``~/.espaloma`` is downloaded on first use.
+        espaloma_charge_method: Charge model for the espaloma backend, default
+            ``"nn"`` - espaloma's own prediction. See
+            ``forcefill.espaloma.ESPALOMA_CHARGE_METHODS``.
         charmm_files: CHARMM topology/parameter files shared by every charmm
             ligand, e.g. an extra ``par_all36_cgenff.prm``. Per-ligand stream
             files go in ``LigandSpec(charmm_files=...)``, appended after these.
@@ -260,6 +276,7 @@ def build_forcefield_xml(
             antechamber_args=tuple(antechamber_args),
             backend=backend,
             forcefield=smirnoff_forcefield,
+            espaloma_forcefield=espaloma_forcefield,
             charmm_files=tuple(charmm_files),
             names=frozenset(to_param),
         ),
@@ -269,6 +286,7 @@ def build_forcefield_xml(
     # field is one its output could never be loaded with.
     gaff_dat = _pipeline.prepare_gaff_backend(specs, atom_type)
     smirnoff_profiles = _pipeline.prepare_smirnoff_backend(specs)
+    _pipeline.prepare_espaloma_backend(specs)
     _pipeline.check_backends_match_base(specs, base_forcefield, smirnoff_profiles)
 
     minimizations: dict[str, MinimizationResult] = {}
@@ -287,7 +305,14 @@ def build_forcefield_xml(
         )
 
         artifacts = _pipeline.parameterize_all(
-            specs, to_param, positions, wd, gaff_dat=gaff_dat, timeout=timeout, base_forcefield=base_forcefield
+            specs,
+            to_param,
+            positions,
+            wd,
+            gaff_dat=gaff_dat,
+            timeout=timeout,
+            base_forcefield=base_forcefield,
+            espaloma_charge_method=espaloma_charge_method,
         )
         residue_xmls = {name: art.xml for name, art in artifacts.items()}
 
@@ -298,13 +323,17 @@ def build_forcefield_xml(
             # Parse the (large) base force field + new XML once; every check uses it.
             files = [*base_forcefield, combined]
             forcefield = app.ForceField(*files)
+            # A SMIRNOFF or Espaloma force field with virtual sites describes more
+            # particles than the residue has atoms; the topology has to carry them
+            # or OpenMM matches nothing at all.
+            virtual_sites = bool(residue_templates_with_virtual_sites(combined))
             # Validate first: a template mismatch then reports itself as such,
             # not as the minimizer failing to build a System.
             if validate:
-                _validate_parameterized_residues(to_param, forcefield, files)
+                _validate_parameterized_residues(to_param, forcefield, files, positions, virtual_sites=virtual_sites)
             if minimize:
                 minimizations = _minimize_parameterized_residues(
-                    to_param, positions, combined, base_forcefield, forcefield
+                    to_param, positions, combined, base_forcefield, forcefield, virtual_sites=virtual_sites
                 )
             if skipped:
                 log.warning(
@@ -317,11 +346,14 @@ def build_forcefield_xml(
                     ", ".join(sorted(skipped)),
                 )
             else:
+                full_topology, full_positions = _expand_virtual_sites(
+                    topology, positions, forcefield, needed=virtual_sites
+                )
                 if validate:
-                    validate_forcefield_xml(topology, combined, base_forcefield, forcefield=forcefield)
+                    validate_forcefield_xml(full_topology, combined, base_forcefield, forcefield=forcefield)
                 if minimize:
                     full_minimization = minimize_with_forcefield_xml(
-                        topology, positions, combined, base_forcefield, forcefield=forcefield
+                        full_topology, full_positions, combined, base_forcefield, forcefield=forcefield
                     )
 
     return ParameterizationResult(

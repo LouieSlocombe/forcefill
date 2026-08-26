@@ -5,6 +5,7 @@ from ._spec import (
     BACKENDS,
     CHARMM_BASE_FORCEFIELD,
     DEFAULT_BASE_FORCEFIELD,
+    DEFAULT_ESPALOMA_FORCEFIELD,
     DEFAULT_SMIRNOFF_FORCEFIELD,
     LigandSpec,
 )
@@ -19,7 +20,9 @@ from .checks import (
     DEFAULT_MINIMIZATION_PLATFORM,
     DEFAULT_MINIMIZATION_TOLERANCE,
     MinimizationResult,
+    add_extra_particles,
     minimize_with_forcefield_xml,
+    residue_templates_with_virtual_sites,
     validate_forcefield_xml,
 )
 from .clean_structure import (
@@ -57,6 +60,7 @@ __all__ = [
     "CHARMM_BASE_FORCEFIELD",
     "DEFAULT_AMBERTOOLS_TIMEOUT",
     "DEFAULT_BASE_FORCEFIELD",
+    "DEFAULT_ESPALOMA_FORCEFIELD",
     "DEFAULT_MINIMIZATION_PLATFORM",
     "DEFAULT_MINIMIZATION_TOLERANCE",
     "DEFAULT_SMIRNOFF_FORCEFIELD",
@@ -66,6 +70,7 @@ __all__ = [
     "LigandSpec",
     "MinimizationResult",
     "ParameterizationResult",
+    "add_extra_particles",
     "assemble_openmm_ffxml",
     "build_forcefield_xml",
     "build_ligand_xml",
@@ -76,6 +81,7 @@ __all__ = [
     "locate_gaff_dat",
     "merge_ffxml",
     "minimize_with_forcefield_xml",
+    "residue_templates_with_virtual_sites",
     "run_antechamber",
     "run_parmchk2",
     "validate_forcefield_xml",

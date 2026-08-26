@@ -89,7 +89,15 @@ def _classify_unmatched(
             )
         elif n_atoms == 1:
             skipped[name] = (
-                "monatomic species - use an ion parameter file for it (GAFF/antechamber cannot treat bare ions)"
+                "monatomic species - GAFF/antechamber cannot treat bare ions. "
+                "The standard base force fields already define the common ones "
+                "(Na, K, Cl, Br, Zn, Mg, Ca, Mn, Fe, Cu), so one that still "
+                "failed to match is usually a residue- or atom-name mismatch, "
+                "or a charge state no template carries; rename it to match, or "
+                "load a parameter set that covers it - note that the ion sets "
+                "openmmforcefields ships under amber/ions/ *replace* the ions "
+                "in the bundled water file rather than adding to them, so they "
+                "collide with amber14-all.xml"
             )
         elif n_linked := sum(1 for r in residues if any(True for _ in r.external_bonds())):
             skipped[name] = (

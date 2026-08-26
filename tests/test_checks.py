@@ -14,7 +14,7 @@ import pytest
 pytest.importorskip("openmm")
 pytest.importorskip("parmed")
 
-from openmm import app
+from openmm import app, unit
 
 from forcefill import amber, checks
 from tests.helpers import DATA, METHANOL_XYZ, methanol_positions, methanol_residue, write_methanol_pdb
@@ -178,3 +178,114 @@ def test_minimize_accepts_prebuilt_forcefield(tmp_path: Path) -> None:
         residue.chain.topology, methanol_positions(), xml, base_forcefield=(), forcefield=app.ForceField(xml)
     )
     assert math.isfinite(result.final_energy)
+
+
+# --------------------------------------------------------------------------
+# Virtual sites
+# --------------------------------------------------------------------------
+
+#: A LIG template carrying one extra site, copied in shape from what
+#: openmmforcefields >= 0.16 writes for a SMIRNOFF BondCharge site: a
+#: two-particle ``localCoords`` frame on the C1-O1 bond. Modeller cannot
+#: reconstruct that frame and puts the site somewhere else entirely, which is
+#: what makes ``Context.computeVirtualSites`` necessary rather than merely tidy.
+#: p1=0.14 nm along the C1->O1 axis puts the site exactly on O1 for this
+#: geometry, so the correct answer is known without recomputing it here.
+_VSITE_XML = """<ForceField>
+ <AtomTypes>
+  <Type name="XC" class="XC" element="C" mass="12.011"/>
+  <Type name="XO" class="XO" element="O" mass="15.999"/>
+  <Type name="XH" class="XH" element="H" mass="1.008"/>
+  <Type name="XEP" class="XEP" mass="0.0"/>
+ </AtomTypes>
+ <Residues>
+  <Residue name="LIG">
+   <Atom name="C1" type="XC" charge="0.1"/>
+   <Atom name="O1" type="XO" charge="-0.6"/>
+   <Atom name="H1" type="XH" charge="0.1"/>
+   <Atom name="H2" type="XH" charge="0.1"/>
+   <Atom name="H3" type="XH" charge="0.1"/>
+   <Atom name="H4" type="XH" charge="0.1"/>
+   <Atom name="EP1" type="XEP" charge="0.1"/>
+   <Bond atomName1="C1" atomName2="O1"/>
+   <Bond atomName1="C1" atomName2="H1"/>
+   <Bond atomName1="C1" atomName2="H2"/>
+   <Bond atomName1="C1" atomName2="H3"/>
+   <Bond atomName1="O1" atomName2="H4"/>
+   <VirtualSite siteName="EP1" type="localCoords" p1="0.14" p2="0.0" p3="0.0"
+     atomName1="C1" wo1="1.0" wx1="-1.0" wy1="-1.0"
+     atomName2="O1" wo2="0.0" wx2="1.0" wy2="1.0"/>
+  </Residue>
+ </Residues>
+ <NonbondedForce coulomb14scale="0.8333333333" lj14scale="0.5">
+  <UseAttributeFromResidue name="charge"/>
+  <Atom type="XC" sigma="0.34" epsilon="0.36"/>
+  <Atom type="XO" sigma="0.30" epsilon="0.88"/>
+  <Atom type="XH" sigma="0.26" epsilon="0.06"/>
+  <Atom type="XEP" sigma="1.0" epsilon="0.0"/>
+ </NonbondedForce>
+</ForceField>
+"""
+
+
+def test_a_template_without_virtual_sites_reports_none(tmp_path: Path) -> None:
+    xml, _ = _write_lig_xml(tmp_path)
+    assert checks.residue_templates_with_virtual_sites(xml) == []
+
+
+def test_a_template_with_virtual_sites_names_the_residue(tmp_path: Path) -> None:
+    xml = tmp_path / "vsite.xml"
+    xml.write_text(_VSITE_XML)
+    assert checks.residue_templates_with_virtual_sites(xml) == ["LIG"]
+
+
+def test_add_extra_particles_grows_the_topology(tmp_path: Path) -> None:
+    xml = tmp_path / "vsite.xml"
+    xml.write_text(_VSITE_XML)
+    forcefield = app.ForceField(str(xml))
+    residue = methanol_residue()
+    topology = checks._residue_subtopology(residue)
+    expanded, positions = checks.add_extra_particles(topology, methanol_positions(), forcefield)
+    assert expanded.getNumAtoms() == topology.getNumAtoms() + 1
+    assert len(positions) == expanded.getNumAtoms()
+    # Documented behaviour, not an accident: Modeller cannot reconstruct this
+    # frame, so the extra site is a placeholder for OpenMM to overwrite. If this
+    # ever starts matching, computeVirtualSites has stopped being load-bearing.
+    site = positions.value_in_unit(unit.nanometer)[-1]
+    assert not all(math.isclose(a, b, abs_tol=1e-6) for a, b in zip(site, (0.141, 0.0, 0.0), strict=True))
+    # The real atoms are untouched.
+    assert positions.value_in_unit(unit.nanometer)[: topology.getNumAtoms()] == pytest.approx(
+        methanol_positions().value_in_unit(unit.nanometer)
+    )
+    # A System builds from the expanded topology and not from the bare one: the
+    # template describes a particle the residue does not have.
+    forcefield.createSystem(expanded)
+    with pytest.raises(ValueError, match="extra site"):
+        forcefield.createSystem(topology)
+
+
+def test_validation_explains_a_missing_extra_site(tmp_path: Path) -> None:
+    # The wrong answer here is "repair the structure with PDBFixer": the missing
+    # particle belongs to the force field, not to the input.
+    xml = tmp_path / "vsite.xml"
+    xml.write_text(_VSITE_XML)
+    forcefield = app.ForceField(str(xml))
+    with pytest.raises(RuntimeError, match="add_extra_particles") as excinfo:
+        checks._validate_parameterized_residues({"LIG": methanol_residue()}, forcefield, [str(xml)])
+    assert "PDBFixer" not in str(excinfo.value)
+
+
+def test_per_residue_checks_expand_virtual_sites_when_asked(tmp_path: Path) -> None:
+    xml = tmp_path / "vsite.xml"
+    xml.write_text(_VSITE_XML)
+    forcefield = app.ForceField(str(xml))
+    residues = {"LIG": methanol_residue()}
+    positions = methanol_positions()
+    checks._validate_parameterized_residues(residues, forcefield, [str(xml)], positions, virtual_sites=True)
+    reports = checks._minimize_parameterized_residues(residues, positions, xml, [], forcefield, virtual_sites=True)
+    # Six atoms plus the extra site, and a finite energy measured at the geometry
+    # the force field actually describes - which is what computeVirtualSites
+    # buys, since the site does not arrive there.
+    assert reports["LIG"].n_atoms == 7
+    assert math.isfinite(reports["LIG"].initial_energy)
+    assert math.isfinite(reports["LIG"].final_energy)

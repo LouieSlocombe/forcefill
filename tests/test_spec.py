@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 
 from forcefill import LigandSpec
-from forcefill._spec import DEFAULT_SMIRNOFF_FORCEFIELD, _Defaults, resolve_specs
+from forcefill._spec import DEFAULT_ESPALOMA_FORCEFIELD, DEFAULT_SMIRNOFF_FORCEFIELD, _Defaults, resolve_specs
 
 
 def _defaults(names: Iterable[str] = ("LIG",), **kwargs: str | tuple[str, ...]) -> _Defaults:
@@ -277,3 +277,73 @@ def test_a_call_level_forcefield_sequence_reaches_every_spec() -> None:
         defaults=_defaults(backend="smirnoff", forcefield=("openff-2.2.1", "bespoke.offxml")),
     )
     assert specs["LIG"].forcefield == ("openff-2.2.1", "bespoke.offxml")
+
+
+# --------------------------------------------------------------------------
+# Force-field content passed where a file name belongs
+# --------------------------------------------------------------------------
+
+
+def test_offxml_content_is_refused_where_a_path_is_expected() -> None:
+    # openmmforcefields accepts a force field as raw XML; forcefill does not,
+    # because every check and every message names the file it read.
+    offxml = '<?xml version="1.0"?>\n<SMIRNOFF version="0.3"></SMIRNOFF>'
+    with pytest.raises(ValueError, match="OFFXML content rather than a file name"):
+        LigandSpec(smiles="CO", forcefield=offxml)
+
+
+def test_offxml_content_is_refused_inside_a_sequence() -> None:
+    with pytest.raises(ValueError, match="OFFXML content rather than a file name"):
+        LigandSpec(smiles="CO", forcefield=["openff-2.2.1", "  <SMIRNOFF version='0.3'/>"])
+
+
+# --------------------------------------------------------------------------
+# The espaloma backend
+# --------------------------------------------------------------------------
+
+
+def test_espaloma_defaults_to_its_own_model_not_a_smirnoff_release() -> None:
+    # One shared `forcefield` field, two backends that cannot read each other's
+    # values: without the per-backend default this inherits "openff-2.2.1".
+    specs = resolve_specs({"LIG": LigandSpec(smiles="CO")}, defaults=_defaults(backend="espaloma"))
+    assert specs["LIG"].forcefield == (DEFAULT_ESPALOMA_FORCEFIELD,)
+
+
+def test_a_smirnoff_ligand_alongside_an_espaloma_one_keeps_its_own_default() -> None:
+    specs = resolve_specs(
+        {"A": LigandSpec(smiles="CO", backend="smirnoff"), "B": LigandSpec(smiles="CO", backend="espaloma")},
+        defaults=_defaults(names=("A", "B"), backend="gaff"),
+    )
+    assert specs["A"].forcefield == (DEFAULT_SMIRNOFF_FORCEFIELD,)
+    assert specs["B"].forcefield == (DEFAULT_ESPALOMA_FORCEFIELD,)
+
+
+def test_an_espaloma_model_may_be_named_per_ligand() -> None:
+    specs = resolve_specs(
+        {"LIG": LigandSpec(smiles="CO", forcefield="my_model.pt")},
+        defaults=_defaults(backend="espaloma"),
+    )
+    assert specs["LIG"].forcefield == ("my_model.pt",)
+
+
+def test_layering_force_fields_is_refused_for_espaloma() -> None:
+    # openmmforcefields raises a bald TypeError for a non-string model, and
+    # layering has no meaning for a trained network anyway.
+    with pytest.raises(ValueError, match="single model"):
+        resolve_specs(
+            {"LIG": LigandSpec(smiles="CO", forcefield=["espaloma-0.3.2", "extra.pt"])},
+            defaults=_defaults(backend="espaloma"),
+        )
+
+
+def test_an_espaloma_ligand_needs_a_chemical_graph() -> None:
+    with pytest.raises(ValueError, match="espaloma backend but has no ligand source"):
+        resolve_specs({"LIG": LigandSpec()}, defaults=_defaults(backend="espaloma"))
+
+
+def test_charmm_files_are_refused_on_the_espaloma_backend() -> None:
+    with pytest.raises(ValueError, match="which cannot read them"):
+        resolve_specs(
+            {"LIG": LigandSpec(smiles="CO", charmm_files=("lig.str",))},
+            defaults=_defaults(backend="espaloma"),
+        )

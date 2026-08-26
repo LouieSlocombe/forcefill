@@ -31,6 +31,7 @@ __all__ = [
     "BACKENDS",
     "CHARMM_BASE_FORCEFIELD",
     "DEFAULT_BASE_FORCEFIELD",
+    "DEFAULT_ESPALOMA_FORCEFIELD",
     "DEFAULT_SMIRNOFF_FORCEFIELD",
     "LigandSpec",
 ]
@@ -54,8 +55,9 @@ CHARMM_BASE_FORCEFIELD = ("charmm36.xml", "charmm36/water.xml")
 
 #: Parameterization backends. ``"gaff"`` is antechamber + parmchk2 + ParmEd;
 #: ``"smirnoff"`` is openff-toolkit + openmmforcefields; ``"charmm"`` converts
-#: CGenFF/ParamChem files with ParmEd.
-BACKENDS = ("gaff", "smirnoff", "charmm")
+#: CGenFF/ParamChem files with ParmEd; ``"espaloma"`` is the graph neural network
+#: openmmforcefields wraps as ``EspalomaTemplateGenerator``.
+BACKENDS = ("gaff", "smirnoff", "charmm", "espaloma")
 
 #: File suffixes ``parmed.charmm.CharmmParameterSet`` dispatches on. It decides
 #: what a file *is* from its name alone, so ``par_all36_cgenff.prm.txt`` raises
@@ -67,6 +69,13 @@ CHARMM_FILE_SUFFIXES = (".str", ".rtf", ".top", ".prm", ".par", ".inp")
 #: a saved XML would be invisible in the output. A spec may name a different
 #: release, or one or more OFFXML files - see :func:`normalize_forcefield`.
 DEFAULT_SMIRNOFF_FORCEFIELD = "openff-2.2.1"
+
+#: Espaloma model used when a spec on the ``espaloma`` backend does not name one.
+#: Pinned for the same reason as :data:`DEFAULT_SMIRNOFF_FORCEFIELD`. Unlike a
+#: SMIRNOFF selection this is always a *single* entry - openmmforcefields'
+#: ``EspalomaTemplateGenerator`` takes one model name or one ``.pt`` file, and
+#: raises TypeError for anything else.
+DEFAULT_ESPALOMA_FORCEFIELD = "espaloma-0.3.2"
 
 #: Valid ``atom_type`` values: each names a GAFF parameter database ({atom_type}.dat).
 ATOM_TYPES = ("gaff", "gaff2")
@@ -97,7 +106,32 @@ def normalize_forcefield(value: ForceFieldSelection, label: str) -> tuple[str, .
             f"{DEFAULT_SMIRNOFF_FORCEFIELD!r}) or give the path to an OFFXML "
             "file; leave it unset to inherit the default."
         )
-    return tuple(str(entry) for entry in entries)
+    normalized = tuple(str(entry) for entry in entries)
+    for entry in normalized:
+        check_not_inline_xml(entry, label)
+    return normalized
+
+
+def check_not_inline_xml(entry: str, label: str) -> None:
+    """Refuse force-field *content* passed where a file name belongs.
+
+    openmmforcefields accepts a force field as raw XML text, bytes or an open
+    file object as well as a name or a path. forcefill does not, and the reason
+    is traceability: every check it runs names the force field it checked, the
+    generated XML records which file it came from, and half a megabyte of OFFXML
+    inlined into an error message is unreadable. Caught here rather than inside
+    :func:`forcefill.smirnoff.resolve_forcefield_files`, where it arrives as a
+    filename that cannot be resolved and reads like a library bug.
+    """
+    if not entry.lstrip().startswith("<"):
+        return
+    raise ValueError(
+        f"{label} was given OFFXML content rather than a file name. forcefill "
+        "identifies a force field by the file it came from - the preflight "
+        "checks name it, and so does the generated XML - so write the document "
+        "to a '.offxml' file and pass that path instead. (openmmforcefields "
+        "itself accepts inline XML; forcefill deliberately does not.)"
+    )
 
 
 def check_charmm_suffix(path: PathLike) -> None:
@@ -146,15 +180,17 @@ class LigandSpec:
         charge_method: antechamber charge method; ``None`` inherits. gaff only.
         antechamber_args: Extra antechamber arguments for this ligand, appended
             after the call-level ones.
-        backend: ``"gaff"``, ``"smirnoff"`` or ``"charmm"``; ``None`` inherits.
-            smirnoff needs *file* or *smiles*, charmm needs *charmm_files*.
-        forcefield: SMIRNOFF force field for the ``smirnoff`` backend: an
-            installed release name (``"openff-2.2.1"``), a path to an OFFXML
-            file - a bespoke one from
+        backend: ``"gaff"``, ``"smirnoff"``, ``"charmm"`` or ``"espaloma"``;
+            ``None`` inherits. smirnoff and espaloma need *file* or *smiles*,
+            charmm needs *charmm_files*.
+        forcefield: The force field for the ``smirnoff`` and ``espaloma``
+            backends; ``None`` inherits. For smirnoff: an installed release name
+            (``"openff-2.2.1"``), a path to an OFFXML file - a bespoke one from
             `BespokeFit <https://github.com/openforcefield/openff-bespokefit>`_,
-            say - or a sequence of either, layered left to right. ``None``
-            inherits. An OFFXML must be *unconstrained*; see
-            :mod:`forcefill.smirnoff`.
+            say - or a sequence of either, layered left to right. An OFFXML must
+            be *unconstrained*; see :mod:`forcefill.smirnoff`. For espaloma: one
+            model name (``"espaloma-0.3.2"``) or one ``.pt`` file, never a
+            sequence - see :mod:`forcefill.espaloma`.
         charmm_files: CHARMM topology/parameter files for the ``charmm`` backend
             - typically one ``.str`` from ParamChem or the cgenff program, plus
             any extra ``.rtf``/``.prm``. Appended after the call-level ones.
@@ -255,6 +291,10 @@ class _Defaults:
     antechamber_args: tuple[str, ...] = ()
     backend: str = "gaff"
     forcefield: ForceFieldSelection = DEFAULT_SMIRNOFF_FORCEFIELD
+    #: Kept apart from *forcefield* rather than sharing it: the two backends
+    #: cannot read each other's selections, so one field would make
+    #: ``backend="espaloma"`` silently inherit a SMIRNOFF release name.
+    espaloma_forcefield: ForceFieldSelection = DEFAULT_ESPALOMA_FORCEFIELD
     charmm_files: tuple[PathLike, ...] = ()
     #: Residue names to build specs for. Everything outside this set is reported
     #: by the caller as an override that matched nothing.
@@ -295,6 +335,36 @@ def _merge_legacy(
     return replace(spec, **updates) if updates else spec
 
 
+def _forcefield_for(
+    name: str,
+    backend: str,
+    spec: LigandSpec,
+    default_smirnoff: tuple[str, ...],
+    default_espaloma: tuple[str, ...],
+) -> tuple[str, ...]:
+    """The force-field selection for one resolved spec, defaulted by backend.
+
+    The two backends that read this field cannot read each other's values, so
+    the default has to follow the backend: a ligand switched to ``espaloma``
+    without naming a model wants :data:`DEFAULT_ESPALOMA_FORCEFIELD`, not the
+    SMIRNOFF release the call inherited.
+    """
+    if spec.forcefield:
+        selection = normalize_forcefield(spec.forcefield, "LigandSpec.forcefield")
+    else:
+        selection = default_espaloma if backend == "espaloma" else default_smirnoff
+    if backend == "espaloma" and len(selection) != 1:
+        raise ValueError(
+            f"Residue {name} uses the espaloma backend with "
+            f"{list(selection)}, but an Espaloma force field is a single model: "
+            "openmmforcefields' EspalomaTemplateGenerator takes one name "
+            f"(e.g. {DEFAULT_ESPALOMA_FORCEFIELD!r}) or one '.pt' file and "
+            "raises TypeError for anything else. Layering, which the smirnoff "
+            "backend allows, has no meaning for a trained model."
+        )
+    return selection
+
+
 def resolve_specs(
     ligands: Mapping[str, LigandSpec] | None,
     *,
@@ -316,15 +386,17 @@ def resolve_specs(
     residue_files = dict(residue_files or {})
     defaults = defaults or _Defaults()
     default_forcefield = normalize_forcefield(defaults.forcefield, "smirnoff_forcefield")
+    default_espaloma = normalize_forcefield(defaults.espaloma_forcefield, "espaloma_forcefield")
 
     resolved: dict[str, ResolvedSpec] = {}
     for name in sorted(defaults.names):
         spec = _merge_legacy(name, ligands.get(name, LigandSpec()), net_charges, multiplicities, residue_files)
         backend = spec.backend or defaults.backend
-        if backend == "smirnoff" and not (spec.file or spec.smiles):
+        if backend in ("smirnoff", "espaloma") and not (spec.file or spec.smiles):
+            what = "SMIRNOFF" if backend == "smirnoff" else "Espaloma"
             raise ValueError(
-                f"Residue {name} uses the smirnoff backend but has no ligand "
-                "source. SMIRNOFF assigns parameters from the chemical graph, "
+                f"Residue {name} uses the {backend} backend but has no ligand "
+                f"source. {what} assigns parameters from the chemical graph, "
                 "which a PDB residue does not carry (no bond orders), so pass "
                 f"LigandSpec(file=...) or LigandSpec(smiles=...) for {name} - or "
                 "use the gaff backend, which perceives bonds from geometry."
@@ -371,9 +443,7 @@ def resolve_specs(
             # Idempotent: LigandSpec.__post_init__ already normalized its own,
             # but doing it here too is what makes the tuple visible to a reader
             # (and a type checker) at the point ResolvedSpec is built.
-            forcefield=normalize_forcefield(spec.forcefield, "LigandSpec.forcefield")
-            if spec.forcefield
-            else default_forcefield,
+            forcefield=_forcefield_for(name, backend, spec, default_forcefield, default_espaloma),
             charmm_files=charmm_files,
         )
     return resolved

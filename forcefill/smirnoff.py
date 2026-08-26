@@ -34,7 +34,16 @@ that otherwise go wrong silently:
     * **the wrong file for this ligand.** Bespoke parameters are identified by
       nothing but their SMIRKS, so pairing molecule A's force field with
       molecule B silently falls back to stock parameters after the QC has
-      already been paid for. :func:`check_forcefield_applies` says so.
+      already been paid for. :func:`check_forcefield_applies` says so, comparing
+      every handler's assignments - not only the torsions - against the release
+      the file layers on, and standing down entirely for a selection that is
+      released chemistry named by path.
+
+Requires openmmforcefields >= 0.16, which is where ``smirnoff_filenames``, a
+multi-file ``forcefield=`` selection, and constraints and virtual sites in the
+generated template all arrive. Earlier releases strip constraints and take a
+single force field only, so both the check above and the layering below would be
+silently or loudly wrong against them.
 """
 
 from __future__ import annotations
@@ -47,6 +56,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from openff.toolkit import ForceField, Molecule
+from openff.toolkit.typing.engines.smirnoff import get_available_force_fields
 from openmmforcefields.generators import SMIRNOFFTemplateGenerator
 
 from ._spec import DEFAULT_SMIRNOFF_FORCEFIELD, PathLike, ResolvedSpec
@@ -63,6 +73,7 @@ __all__ = [
     "forcefield_14_scales",
     "installed_smirnoff_forcefields",
     "is_custom_forcefield",
+    "is_stock_forcefield",
     "ligand_topology",
     "load_forcefield",
     "resolve_forcefield_files",
@@ -104,12 +115,62 @@ def resolve_forcefield_files(forcefield: Sequence[str]) -> list[str]:
     paths = generator.smirnoff_filenames
     if any(path is None for path in paths):
         unresolved = [entry for entry, path in zip(forcefield, paths, strict=True) if path is None]
-        raise RuntimeError(
-            f"openmmforcefields loaded {list(forcefield)} but could not say which "
-            f"file {unresolved} came from. This is a change in that library's "
-            "output; report it against forcefill."
+        raise ValueError(
+            f"openmmforcefields parsed {unresolved} but it corresponds to no file "
+            "on disk, so forcefill cannot record which force field the generated "
+            "XML came from. That happens when a force field is given as content "
+            "rather than as a name or a path - write it to a '.offxml' file and "
+            "pass that instead."
         )
     return list(paths)
+
+
+@cache
+def _stock_forcefield_paths() -> frozenset[str]:
+    """Resolved paths of every OFFXML the installed OpenFF packages ship.
+
+    Read from the toolkit rather than from a list of release names: the released
+    force fields live in an installed data package, so "is this file a release?"
+    is answered exactly by where it sits, with nothing parsed.
+    """
+    return frozenset(str(Path(path).resolve()) for path in get_available_force_fields(full_paths=True))
+
+
+@cache
+def _stock_forcefield_names() -> frozenset[str]:
+    """File names of the released OFFXMLs, for an entry the toolkit resolves itself."""
+    return frozenset(Path(path).name for path in _stock_forcefield_paths())
+
+
+def _is_stock_entry(entry: str) -> bool:
+    """True when *entry* names a released OpenFF force field rather than a local file.
+
+    Decided by resolved path wherever there is one, not by name alone: a file in
+    the working directory called ``openff_unconstrained-2.2.1.offxml`` is a
+    bespoke force field with a confusing name, and calling it stock would skip
+    the very check it needs.
+    """
+    if entry in installed_smirnoff_forcefields():
+        return True
+    path = Path(entry)
+    if path.is_file():
+        return str(path.resolve()) in _stock_forcefield_paths()
+    # Nothing here by that name, so the toolkit will resolve it from its own
+    # search path - which holds released force fields and nothing else.
+    return path.name in _stock_forcefield_names()
+
+
+def is_stock_forcefield(forcefield: Sequence[str]) -> bool:
+    """True when every entry in *forcefield* is a released OpenFF force field.
+
+    Distinct from the negation of :func:`is_custom_forcefield`, which asks
+    whether openmmforcefields will recognize the *name*. A release can also be
+    named by path - ``openff_unconstrained-2.3.0.offxml``, or any release newer
+    than the installed openmmforcefields has an alias for - and that is still
+    stock chemistry, with no bespoke parameters for
+    :func:`check_forcefield_applies` to look for.
+    """
+    return bool(forcefield) and all(_is_stock_entry(entry) for entry in forcefield)
 
 
 def load_forcefield(forcefield: Sequence[str]) -> ForceField:
@@ -137,15 +198,58 @@ def load_forcefield(forcefield: Sequence[str]) -> ForceField:
 
 
 @cache
-def _stock_torsion_smirks(release: str) -> frozenset[str]:
-    """Every proper-torsion SMIRKS in an installed release.
+def _stock_smirks(release: str) -> frozenset[tuple[str, str]]:
+    """Every ``(handler, SMIRKS)`` pair an installed release defines.
+
+    Every handler, not just ``ProperTorsions``: a force field can be customized
+    in its charges, its vdW, its bonded terms or its virtual sites, and reading
+    only the torsions would call all of those "nothing a stock release would not
+    give you".
 
     Cached like :func:`forcefill.charmm._base_profile`, and for the same reason:
     a Sage OFFXML is half a megabyte and the answer is the same for every ligand
     in a build.
     """
     stock = ForceField(*resolve_forcefield_files((release,)))
-    return frozenset(parameter.smirks for parameter in stock.get_parameter_handler("ProperTorsions").parameters)
+    return frozenset(
+        (handler, parameter.smirks)
+        for handler in stock.registered_parameter_handlers
+        for parameter in getattr(stock.get_parameter_handler(handler), "parameters", ())
+    )
+
+
+def _assigned_smirks(forcefield: ForceField, molecule: Molecule) -> frozenset[tuple[str, str]]:
+    """Every ``(handler, SMIRKS)`` pair *forcefield* actually assigns to *molecule*.
+
+    What was assigned, not what the file contains: a parameter that matches
+    nothing in this molecule is exactly the case being looked for.
+
+    Most handlers map each atom tuple to one parameter, but ``VirtualSites``
+    maps it to a *list* of them - one atom can carry several extra sites - so
+    every value is flattened before its SMIRKS is read. Reading ``.smirks`` off
+    the list instead would silently drop the whole handler.
+    """
+    labels = forcefield.label_molecules(molecule.to_topology())[0]
+    return frozenset(
+        (handler, parameter.smirks)
+        for handler, assignments in labels.items()
+        for value in assignments.values()
+        for parameter in (value if isinstance(value, (list, tuple)) else [value])
+        if hasattr(parameter, "smirks")
+    )
+
+
+def _reference_release(selection: Sequence[str]) -> str:
+    """The released force field a custom *selection* is measured against.
+
+    A bespoke file is nearly always layered on a stock release
+    (``["openff-2.2.1", "bespoke.offxml"]``), and that release is the honest
+    baseline - measuring against :data:`DEFAULT_SMIRNOFF_FORCEFIELD` instead
+    would credit the bespoke file with every parameter the two releases happen to
+    differ by. The last stock entry wins, matching how the toolkit layers them.
+    """
+    stock = [entry for entry in selection if _is_stock_entry(entry)]
+    return stock[-1] if stock else DEFAULT_SMIRNOFF_FORCEFIELD
 
 
 def forcefield_14_scales(forcefield: ForceField) -> tuple[float, float]:
@@ -212,25 +316,48 @@ def check_forcefield_applies(
     falls back to the stock parameters underneath it - after the quantum
     chemistry has been paid for, and with nothing anywhere reporting it.
 
-    The signal is a proper torsion assigned from a pattern the stock release does
-    not contain: a bespoke SMIRKS never appears in a stock force field, so a
-    genuine bespoke file always has at least one, even when it was fitted against
-    a different Sage version. Version skew can only make this check *quieter*,
+    The signal is a parameter assigned from a pattern the stock release does not
+    contain: a bespoke SMIRKS never appears in a stock force field, so a genuine
+    bespoke file always has at least one, even when it was fitted against a
+    different Sage version. Version skew can only make this check *quieter*,
     never make it fire wrongly.
+
+    Two things keep it from firing on a force field that is merely not the
+    default. A selection that is entirely released chemistry - a release named by
+    path, or one newer than the installed openmmforcefields has an alias for - has
+    no bespoke parameters to look for and is not examined at all. And the
+    comparison covers every handler, so a file that customizes charges, vdW,
+    bonded terms or virtual sites rather than torsions is recognized as
+    contributing something.
     """
-    labels = forcefield.label_molecules(molecule.to_topology())[0]["ProperTorsions"]
-    assigned = {parameter.smirks for parameter in labels.values()}
-    extra = assigned - _stock_torsion_smirks(DEFAULT_SMIRNOFF_FORCEFIELD)
+    if is_stock_forcefield(selection):
+        log.info(
+            "%s: %s is released OpenFF chemistry, so there are no bespoke parameters to check for.",
+            name,
+            list(selection),
+        )
+        return
+    reference = _reference_release(selection)
+    assigned = _assigned_smirks(forcefield, molecule)
+    extra = assigned - _stock_smirks(reference)
     if extra:
-        log.info("%s: %d of %d proper torsions come from %s", name, len(extra), len(assigned), list(selection))
+        handlers = ", ".join(sorted({handler for handler, _ in extra}))
+        log.info(
+            "%s: %d of %d assigned parameters come from %s (%s)",
+            name,
+            len(extra),
+            len(assigned),
+            list(selection),
+            handlers,
+        )
         return
     message = (
         f"The SMIRNOFF force field {list(selection)} gives residue {name} nothing "
-        f"that {DEFAULT_SMIRNOFF_FORCEFIELD} would not: all {len(assigned)} of its "
-        "proper torsions were assigned from stock patterns. A bespoke force field "
-        "matches by SMIRKS alone, so one fitted for a different molecule falls "
-        "back to stock parameters silently. Check this is the force field fitted "
-        f"for {name}, or drop it and use the release directly."
+        f"that {reference} would not: all {len(assigned)} of the parameters it "
+        "assigns come from stock patterns. A bespoke force field matches by "
+        "SMIRKS alone, so one fitted for a different molecule falls back to stock "
+        "parameters silently. Check this is the force field fitted for "
+        f"{name}, or drop it and use the release directly."
     )
     if strict:
         raise ValueError(message)

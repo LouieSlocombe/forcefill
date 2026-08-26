@@ -8,6 +8,7 @@ deselected along with ``integration`` when you want only the fast tests.
 from __future__ import annotations
 
 import logging
+import math
 import re
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -24,7 +25,7 @@ from openmm import app
 from forcefill import LigandSpec, build_ligand_xml
 from forcefill._spec import ResolvedSpec
 from forcefill.smirnoff import installed_smirnoff_forcefields, smirnoff_residue_ffxml
-from tests.helpers import write_methanol_pdb
+from tests.helpers import write_chloroethanol_pdb, write_methanol_pdb
 
 EXAMPLES = Path(__file__).parent.parent / "examples" / "data"
 BENZAMIDINIUM = EXAMPLES / "benzamidinium.sdf"
@@ -262,3 +263,145 @@ def test_a_missing_offxml_fails_before_any_ligand_is_read(tmp_path: Path, monkey
             backend="smirnoff",
             workdir=tmp_path / "wd",
         )
+
+
+# --------------------------------------------------------------------------
+# Released chemistry that is not the default release
+# --------------------------------------------------------------------------
+
+
+def test_a_release_named_by_path_is_not_treated_as_bespoke(tmp_path: Path) -> None:
+    # A release can be named by its file - which is the only way to reach one
+    # newer than the installed openmmforcefields has an alias for. That is still
+    # stock chemistry, so the bespoke check has nothing to look for and must not
+    # refuse it for assigning only stock patterns.
+    from forcefill.smirnoff import resolve_forcefield_files
+
+    path = resolve_forcefield_files((installed_smirnoff_forcefields()[-1],))[0]
+    result = build_ligand_xml(
+        {"BEN": LigandSpec(file=BENZAMIDINIUM, forcefield=path)},
+        tmp_path / "out.xml",
+        backend="smirnoff",
+        workdir=tmp_path / "wd",
+    )
+    assert result.parameterized == ["BEN"]
+
+
+def test_a_release_named_by_path_is_still_checked_for_constraints(tmp_path: Path) -> None:
+    # Standing down on the bespoke check must not stand down on this one: the
+    # constrained build of a release is exactly what gets picked by mistake.
+    from openff.toolkit import ForceField
+
+    from forcefill.smirnoff import resolve_forcefield_files
+
+    constrained = tmp_path / "constrained.offxml"
+    ForceField("openff-2.2.1.offxml").to_file(str(constrained))
+    assert resolve_forcefield_files((str(constrained),))  # readable, just not unconstrained
+    with pytest.raises(ValueError, match="unconstrained"):
+        build_ligand_xml(
+            {"BEN": LigandSpec(file=BENZAMIDINIUM, forcefield=constrained)},
+            tmp_path / "out.xml",
+            backend="smirnoff",
+            workdir=tmp_path / "wd",
+        )
+
+
+def test_a_local_file_named_like_a_release_is_still_checked(tmp_path: Path) -> None:
+    # "Is this stock?" is answered by where the file resolves to, not by its
+    # name - otherwise a bespoke file with a confusing name skips its own check.
+    offxml = _bespoke_offxml(tmp_path / "openff_unconstrained-2.2.1.offxml", "CCCCCCO")
+    with pytest.raises(ValueError, match=re.escape("nothing that openff-2.2.1 would not")):
+        build_ligand_xml(
+            {"BEN": LigandSpec(file=BENZAMIDINIUM, forcefield=offxml)},
+            tmp_path / "out.xml",
+            backend="smirnoff",
+            workdir=tmp_path / "wd",
+        )
+
+
+# --------------------------------------------------------------------------
+# Virtual sites (openmmforcefields >= 0.16 writes them into the template)
+# --------------------------------------------------------------------------
+
+
+def _vsite_offxml(path: Path, release: str = "openff_unconstrained-2.2.1.offxml") -> Path:
+    """Write a release plus a sigma-hole bond-charge site on every C-Cl bond."""
+    from openff.toolkit import ForceField
+    from openff.toolkit.typing.engines.smirnoff import VirtualSiteHandler
+
+    forcefield = ForceField(release)
+    handler = VirtualSiteHandler(version="0.3")
+    handler.add_parameter(
+        {
+            "smirks": "[#6:1]-[#17:2]",
+            "type": "BondCharge",
+            "match": "all_permutations",
+            "name": "EP",
+            "distance": -1.4 * unit.angstrom,
+            "charge_increment": [0.2 * unit.elementary_charge, 0.0 * unit.elementary_charge],
+            "sigma": 0.0 * unit.angstrom,
+            "epsilon": 0.0 * unit.kilocalorie_per_mole,
+        }
+    )
+    forcefield.register_parameter_handler(handler)
+    forcefield.to_file(str(path))
+    return path
+
+
+def test_a_virtual_site_offxml_writes_the_site_into_the_template(tmp_path: Path) -> None:
+    offxml = _vsite_offxml(tmp_path / "vsite.offxml")
+    xml = smirnoff_residue_ffxml(
+        ResolvedSpec(name="CBZ", smiles="c1ccccc1Cl", forcefield=str(offxml)), tmp_path / "CBZ.xml"
+    )
+    residue = ET.parse(xml).getroot().find("./Residues/Residue")
+    assert residue is not None
+    assert residue.findall("VirtualSite"), "openmmforcefields >= 0.16 writes virtual sites into the template"
+
+
+def test_a_virtual_site_offxml_is_not_mistaken_for_the_wrong_molecules_forcefield(tmp_path: Path) -> None:
+    # It customizes no torsions at all, so a torsion-only bespoke check would
+    # refuse it - yet it plainly gives the ligand something stock does not.
+    offxml = _vsite_offxml(tmp_path / "vsite.offxml")
+    result = build_ligand_xml(
+        {"CBZ": LigandSpec(smiles="c1ccccc1Cl", forcefield=str(offxml))},
+        tmp_path / "out.xml",
+        backend="smirnoff",
+        workdir=tmp_path / "wd",
+    )
+    assert result.parameterized == ["CBZ"]
+
+
+def test_a_virtual_site_ligand_validates_and_minimizes(tmp_path: Path) -> None:
+    # The template describes 13 particles and the molecule has 12 atoms; without
+    # the extra particle OpenMM matches no template at all.
+    offxml = _vsite_offxml(tmp_path / "vsite.offxml")
+    result = build_ligand_xml(
+        {"CBZ": LigandSpec(smiles="c1ccccc1Cl", forcefield=str(offxml))},
+        tmp_path / "out.xml",
+        backend="smirnoff",
+        workdir=tmp_path / "wd",
+        minimize=True,
+    )
+    report = result.minimizations["CBZ"]
+    assert report.n_atoms == 13
+    assert math.isfinite(report.initial_energy)
+    assert math.isfinite(report.final_energy)
+
+
+def test_a_virtual_site_ligand_validates_from_a_structure(tmp_path: Path) -> None:
+    # The structure path has the same problem: a PDB carries no extra sites.
+    from forcefill import build_forcefield_xml
+
+    pdb = write_chloroethanol_pdb(tmp_path / "cet.pdb")
+    offxml = _vsite_offxml(tmp_path / "vsite.offxml")
+    result = build_forcefield_xml(
+        pdb,
+        tmp_path / "out.xml",
+        ligands={"CET": LigandSpec(smiles="OCCCl", backend="smirnoff", forcefield=str(offxml))},
+        workdir=tmp_path / "wd",
+        minimize=True,
+    )
+    assert result.parameterized == ["CET"]
+    assert result.minimizations["CET"].n_atoms == 10  # 9 atoms of OCCCl + 1 extra site
+    assert result.full_minimization is not None
+    assert math.isfinite(result.full_minimization.final_energy)

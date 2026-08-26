@@ -24,7 +24,13 @@ dependencies:
   # the OpenFF pair for the smirnoff backend.
   - rdkit
   - openff-toolkit
-  - openmmforcefields
+  # 0.16 is the floor, not a preference: it is where smirnoff_filenames, a
+  # multi-file forcefield= selection, and constraints and virtual sites in the
+  # generated template arrive. The smirnoff backend does not work below it.
+  - openmmforcefields>=0.16
+  # backend="espaloma" additionally needs `espaloma`, deliberately left out
+  # here: it pulls in PyTorch, and the other three backends never touch it.
+  #   conda install -c conda-forge espaloma
   - pytest
   - pytest-cov
   - python-build

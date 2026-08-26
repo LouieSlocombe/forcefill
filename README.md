@@ -6,7 +6,8 @@ Turn ligands into a ready-to-use [OpenMM](https://openmm.org) force-field XML �
 either the non-standard residues (ligands, cofactors, hetero molecules) found in
 a PDB, or ligand files on their own. Parameters come from AmberTools
 (`antechamber` + `parmchk2`) via [ParmEd](https://github.com/ParmEd/ParmEd),
-from [OpenFF](https://openforcefield.org) Sage via
+from [OpenFF](https://openforcefield.org) Sage or
+[Espaloma](https://github.com/choderalab/espaloma) via
 [openmmforcefields](https://github.com/openmm/openmmforcefields), or — for
 CHARMM — by converting the CGenFF stream file
 [ParamChem](https://cgenff.paramchem.org) gave you.
@@ -42,8 +43,9 @@ build_ligand_xml("benzamidinium.sdf", "ben.xml")
    the geometry is checked for the faults that produce NaN energies.
 4. **Parameterize** — each unique residue through `antechamber` (GAFF2 atom
    types, AM1-BCC charges → `.mol2`) and `parmchk2` (missing parameters →
-   `.frcmod`), through OpenFF with `backend="smirnoff"`, or from a CGenFF stream
-   file with `backend="charmm"`.
+   `.frcmod`), through OpenFF with `backend="smirnoff"`, through the Espaloma
+   graph network with `backend="espaloma"`, or from a CGenFF stream file with
+   `backend="charmm"`.
 5. **Assemble** — one XML per residue, plus one combined XML.
 6. **Validate** — an `openmm.System` is built from `base force field + new XML`
    for every parameterized residue on its own (and for the whole input when
@@ -60,7 +62,7 @@ physically wrong parameters, so these are reported and skipped:
 | Unmatched residue | Action | Do this instead |
 |---|---|---|
 | Standard residue (e.g. `ALA`, `HOH`) that failed to match | skip | It is missing atoms or has non-standard atom names — repair the structure with [PDBFixer](https://github.com/openmm/pdbfixer) or `Modeller.addHydrogens` |
-| Monatomic species (ions such as `ZN`, `NA`) | skip | Load an ion parameter file; GAFF/antechamber cannot treat bare ions |
+| Monatomic species (ions such as `ZN`, `NA`) | skip | GAFF/antechamber cannot treat bare ions. The standard base force fields already define the common ones, so one that *still* failed to match is usually a residue- or atom-name mismatch, or a charge state no template carries — rename it, or load a set that covers it (note openmmforcefields' `amber/ions/*.xml` **replace** the ions in the bundled water file rather than adding to them, so they collide with `amber14-all.xml`) |
 | Residue covalently bonded to its neighbours (modified amino acids, glycans) | skip | Stand-alone GAFF is not valid for polymer-linked residues; cap the fragment and derive charges consistently with the backbone force field (pyRED- or ffparam-style workflows) |
 | Free-standing hetero molecule (ligand, cofactor) | **parameterize** | — |
 
@@ -137,12 +139,20 @@ pip install forcefill
 ```
 
 Requires Python ≥ 3.10 and, at import time, `openmm >= 7.6`, `parmed >= 3.4`,
-`rdkit`, `openff-toolkit >= 0.16` and `openmmforcefields >= 0.14` — all ordinary
+`rdkit`, `openff-toolkit >= 0.16` and `openmmforcefields >= 0.16` — all ordinary
 dependencies, with no extras to pick and nothing imported lazily.
 
-AmberTools is the exception, not being a Python package: the `antechamber` and
-`parmchk2` executables must be on `PATH` at run time for the `gaff` backend.
-`backend="smirnoff"` does not need them.
+The openmmforcefields floor is 0.16 and not lower: that release is where
+`smirnoff_filenames`, a multi-file `forcefield=` selection, and constraints and
+virtual sites in the generated template all arrive. On 0.15 and earlier the
+smirnoff backend does not work at all.
+
+Two things are not ordinary dependencies. AmberTools is not a Python package:
+the `antechamber` and `parmchk2` executables must be on `PATH` at run time for
+the `gaff` backend, and no other backend needs them. And `espaloma` is optional,
+because it pulls in PyTorch — install it with
+`conda install -c conda-forge espaloma` if you want `backend="espaloma"`;
+forcefill says so by name if you ask for it without.
 
 ## Quickstart
 
@@ -252,23 +262,40 @@ The older `net_charges`, `multiplicities` and `residue_files` mappings still
 work and are folded in. Setting the same thing both ways raises rather than
 silently picking a winner.
 
-### Three backends
+### Four backends
 
-| | `backend="gaff"` (default) | `backend="smirnoff"` | `backend="charmm"` |
-|---|---|---|---|
-| Parameters | GAFF/GAFF2 atom types, AM1-BCC charges | OpenFF Sage, SMARTS-matched | CGenFF, **converted, not derived** |
-| Needs | AmberTools on `PATH` | nothing beyond the install | a CGenFF stream file for the ligand |
-| Ligand source | PDB residue, SDF, MOL2 or SMILES | **SDF, MOL2 or SMILES only** | **CHARMM `.str`/`.rtf`/`.prm` only** |
-| Base force field | `amber14` (default) | `amber14` (default) | **`CHARMM_BASE_FORCEFIELD`** |
+| | `backend="gaff"` (default) | `backend="smirnoff"` | `backend="espaloma"` | `backend="charmm"` |
+|---|---|---|---|---|
+| Parameters | GAFF/GAFF2 atom types, AM1-BCC charges | OpenFF Sage, SMARTS-matched | Espaloma, **predicted** by a graph network | CGenFF, **converted, not derived** |
+| Needs | AmberTools on `PATH` | nothing beyond the install | the optional `espaloma` package (PyTorch); the model downloads on first use | a CGenFF stream file for the ligand |
+| Ligand source | PDB residue, SDF, MOL2 or SMILES | **SDF, MOL2 or SMILES only** | **SDF, MOL2 or SMILES only** | **CHARMM `.str`/`.rtf`/`.prm` only** |
+| Base force field | `amber14` (default) | `amber14` (default) | `amber14` (default) | **`CHARMM_BASE_FORCEFIELD`** |
 
-SMIRNOFF matches SMARTS against the chemical graph, and a PDB records no bond
-orders — hence the `file`-or-`smiles` requirement, which it states up front.
+SMIRNOFF matches SMARTS against the chemical graph and Espaloma reads that graph
+directly, and a PDB records no bond orders — hence the `file`-or-`smiles`
+requirement, which both state up front.
 
-GAFF and SMIRNOFF can be mixed in one call: forcefill writes one combined XML
-and OpenMM loads it. That works because SMIRNOFF names its atom types by a hash
-of the molecule, so nothing collides, and because the merge keeps the two
-`<PeriodicTorsionForce>` sections apart — GAFF and SMIRNOFF impropers use
-different `ordering` conventions. CHARMM cannot join them; see below.
+The three Amber-family backends can be mixed in one call: forcefill writes one
+combined XML and OpenMM loads it. That works because SMIRNOFF and Espaloma name
+their atom types by a hash of the molecule, so nothing collides, and because the
+merge keeps the `<PeriodicTorsionForce>` sections apart — GAFF and SMIRNOFF
+impropers use different `ordering` conventions. CHARMM cannot join them; see
+below.
+
+Espaloma takes its model where the others take a force field:
+
+```python
+build_ligand_xml("ben.sdf", "ben.xml", backend="espaloma")  # espaloma-0.3.2
+build_ligand_xml(
+    "ben.sdf", "ben.xml", backend="espaloma", espaloma_forcefield="my_model.pt", espaloma_charge_method="am1-bcc"
+)
+```
+
+The charge model is always stated explicitly, never left to the library:
+openmmforcefields picks a *different* default depending on whether
+`template_generator_kwargs` was passed at all, so leaving it unset would make the
+charges depend on how the generator happened to be constructed. forcefill asks
+for `"nn"` — espaloma's own prediction — unless you say otherwise.
 
 ### CHARMM and CGenFF
 
@@ -371,6 +398,14 @@ chemistry you already paid for, and none of them report themselves:
 | The OFFXML **fitted for a different molecule** | Bespoke parameters match by SMIRKS alone, so the wrong file simply falls back to the stock parameters underneath. You get plain Sage and no warning. forcefill compares what the file assigns against what the release would and says so (`strict=False` downgrades it to a warning) |
 | An OFFXML whose **1-4 scaling** differs from the base force field | The same clash as CHARMM-vs-Amber below, and refused the same way — but measured from the file rather than assumed, since only a stock release is guaranteed to say 0.8333/0.5 |
 
+The "wrong molecule" check compares every handler's assignments, not just the
+torsions, so an OFFXML that customizes charges, vdW, bonded terms or virtual
+sites is recognized as contributing something. And a selection that is entirely
+*released* chemistry is not examined at all — a release named by its path
+(`openff_unconstrained-2.3.0.offxml`), which is the only way to reach one newer
+than your openmmforcefields has an alias for, is stock chemistry with no bespoke
+parameters to look for. The constraint and 1-4 checks still run on it.
+
 All three are refused before the first ligand is read, so a typo in the fifth
 ligand's path does not cost the AM1-BCC charges of the first four.
 
@@ -438,16 +473,52 @@ long tail is real.
 - **The periodic box survives the strip.** A de-solvated structure keeps the box
   vectors of the solvated one, so a later PME run would use a mostly-empty box.
   Reset them yourself before simulating it directly.
+- **Virtual sites are extra particles, and they are yours to add.** A SMIRNOFF
+  force field with a `VirtualSites` handler — a sigma-hole model on a halogen,
+  say — makes openmmforcefields write `<VirtualSite>` into the residue template,
+  so the template describes more particles than your topology has atoms and
+  OpenMM matches *nothing*: "the residue is missing 1 extra site". forcefill's
+  own checks handle it, and `MinimizationResult.n_atoms` then counts particles
+  rather than atoms. When you load the XML yourself, add them first:
+
+  ```python
+  modeller = Modeller(pdb.topology, pdb.positions)
+  modeller.addExtraParticles(ff)  # or forcefill.add_extra_particles(...)
+  system = ff.createSystem(modeller.topology)
+  ```
+
+  and let OpenMM place them — `context.computeVirtualSites()` after
+  `setPositions`. Modeller cannot reconstruct a two-particle bond-charge frame
+  and leaves the site somewhere else entirely, or at NaN.
 
 ## Relation to `openmmforcefields`
 
-[`openmmforcefields`](https://github.com/openmm/openmmforcefields)'
-`GAFFTemplateGenerator` and `SMIRNOFFTemplateGenerator` do the same
-parameterization on the fly at `createSystem` time — and forcefill uses the
-latter for its own `smirnoff` backend. forcefill is for the opposite trade-off:
-explicit, inspectable, versionable XML artifacts, produced once, with the
-skip-classification and preflight checks telling you which residues need a
-different treatment entirely.
+[`openmmforcefields`](https://github.com/openmm/openmmforcefields) ships three
+template generators, which do the same parameterization on the fly at
+`createSystem` time. forcefill uses two of them —
+`SMIRNOFFTemplateGenerator` for `backend="smirnoff"` and
+`EspalomaTemplateGenerator` for `backend="espaloma"` — through
+`generate_residue_template`, which hands back a finished ffxml rather than
+registering a callback.
+
+`GAFFTemplateGenerator` is the one forcefill does not use. It shells out to
+`antechamber` and `parmchk2` exactly as forcefill's own `gaff` backend does, so
+going through it would save no dependency and cost the control over charge
+method, net charge, multiplicity and raw antechamber arguments that backend
+exposes.
+
+The trade-off forcefill is for is the opposite one: explicit, inspectable,
+versionable XML artifacts, produced once, with the skip-classification and
+preflight checks telling you which residues need a different treatment entirely.
+
+Two consequences of taking the `generate_residue_template` route are worth
+knowing. Its output carries **constraints and virtual sites** (both new in
+openmmforcefields 0.16), so forcefill refuses a constrained OFFXML and adds the
+extra particles before checking — see the two rows above and below. And the
+**TinyDB cache** the generators accept as `cache=` is consulted only on the
+callback path, never in `generate_residue_template`, so passing it here would do
+nothing; caching the per-residue XMLs is forcefill's own job and is on the
+roadmap.
 
 ## Development
 
@@ -464,7 +535,9 @@ Style is enforced by ruff (`pip install -e '.[dev]' && pre-commit install`).
 
 - A `forcefill` command-line interface — `build_ligand_xml` is the shape one
   wants.
-- Caching, so re-runs into the same workdir skip finished antechamber jobs.
+- Caching, so re-runs into the same workdir skip finished antechamber jobs —
+  and finished SMIRNOFF/Espaloma templates, which openmmforcefields' own
+  `cache=` cannot help with on the code path forcefill uses.
 - Covalently bound ligands. Still skipped, and deliberately: a stand-alone
   treatment of a polymer-linked residue is wrong whichever backend produces it.
 

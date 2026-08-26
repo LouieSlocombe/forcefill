@@ -25,7 +25,7 @@ from typing import TYPE_CHECKING
 
 from openmm import app, unit
 
-from . import amber, charmm, smirnoff
+from . import amber, charmm, espaloma, smirnoff
 from ._spec import CHARMM_BASE_FORCEFIELD, DEFAULT_BASE_FORCEFIELD, PathLike, ResolvedSpec
 from .checks import MinimizationResult
 from .clean_structure import CleaningResult
@@ -44,10 +44,13 @@ __all__ = ["ParameterizationResult"]
 #: writes from ``gaff*.dat`` and openmmforcefields for SMIRNOFF; the CHARMM pair
 #: is what ParmEd writes from a ``CharmmParameterSet``. The smirnoff entry holds
 #: only for a stock release - a custom OFFXML is measured instead, by
-#: :func:`prepare_smirnoff_backend`.
+#: :func:`prepare_smirnoff_backend`. Espaloma predicts valence parameters but
+#: takes its non-bonded convention from the OpenFF force field it is built on
+#: (``openff_unconstrained-2.2.1``), so it declares the Amber pair too.
 _BACKEND_14_SCALES = {
     "gaff": (0.8333333333333334, 0.5),
     "smirnoff": (0.8333333333333334, 0.5),
+    "espaloma": (0.8333333333333334, 0.5),
     "charmm": (1.0, 1.0),
 }
 
@@ -152,6 +155,21 @@ def prepare_smirnoff_backend(specs: Mapping[str, ResolvedSpec]) -> dict[tuple[st
     return profiles
 
 
+def prepare_espaloma_backend(specs: Mapping[str, ResolvedSpec]) -> None:
+    """Check the espaloma backend can run, before anything expensive happens.
+
+    The counterpart of :func:`prepare_gaff_backend`: espaloma is an optional
+    dependency that openmmforcefields imports only inside the generator
+    constructor, so without this the failure arrives after the first ligand has
+    been read - and, on a fresh machine, after a model has been downloaded.
+    """
+    if not any(spec.backend == "espaloma" for spec in specs.values()):
+        return
+    espaloma.require_espaloma()
+    models = sorted({spec.forcefield[0] for spec in specs.values() if spec.backend == "espaloma"})
+    log.info("Using Espaloma model(s): %s", ", ".join(models))
+
+
 def check_backends_match_base(
     specs: Mapping[str, ResolvedSpec],
     base_forcefield: Sequence[str],
@@ -197,9 +215,9 @@ def check_backends_match_base(
             "separately, against their own base force fields."
         )
 
-    # Only one family is in play now, and gaff and smirnoff share a convention,
-    # so any one backend answers for all of them - unless a custom OFFXML says
-    # otherwise, in which case it answers for itself.
+    # Only one family is in play now, and gaff, smirnoff and espaloma share a
+    # convention, so any one backend answers for all of them - unless a custom
+    # OFFXML says otherwise, in which case it answers for itself.
     expected = _BACKEND_14_SCALES["charmm" if charmm_names else "gaff"]
     if not charmm_names:
         expected = _custom_smirnoff_scales(specs, smirnoff_profiles or {}, expected)
@@ -300,22 +318,28 @@ def parameterize_one_residue(
     gaff_dat: str | None = None,
     timeout: float | None = amber.DEFAULT_AMBERTOOLS_TIMEOUT,
     base_forcefield: Sequence[str] = DEFAULT_BASE_FORCEFIELD,
+    espaloma_charge_method: str = espaloma.DEFAULT_ESPALOMA_CHARGE_METHOD,
 ) -> ResidueArtifacts:
     """Run one residue through its backend to a per-residue XML.
 
     For ``gaff`` that is extract -> antechamber -> parmchk2 -> ParmEd, with a
     ``spec.file`` (SDF/MOL2 with explicit bonds) replacing the extraction step.
-    For ``smirnoff`` it is one call into openmmforcefields; for ``charmm``, a
-    conversion of the ligand's CGenFF files - the one output that is *not*
-    self-contained, since it names atom types *base_forcefield* defines rather
-    than redefining them. *residue* and *positions* are None in standalone mode,
-    where there is no structure to extract from.
+    For ``smirnoff`` and ``espaloma`` it is one call into openmmforcefields; for
+    ``charmm``, a conversion of the ligand's CGenFF files - the one output that
+    is *not* self-contained, since it names atom types *base_forcefield* defines
+    rather than redefining them. *residue* and *positions* are None in standalone
+    mode, where there is no structure to extract from.
     """
     res_dir.mkdir(parents=True, exist_ok=True)
     name = spec.name
 
     if spec.backend == "smirnoff":
         return ResidueArtifacts(xml=smirnoff.smirnoff_residue_ffxml(spec, res_dir / f"{name}.xml"))
+
+    if spec.backend == "espaloma":
+        return ResidueArtifacts(
+            xml=espaloma.espaloma_residue_ffxml(spec, res_dir / f"{name}.xml", charge_method=espaloma_charge_method)
+        )
 
     if spec.backend == "charmm":
         return ResidueArtifacts(xml=charmm.charmm_residue_ffxml(spec, res_dir / f"{name}.xml", base_forcefield))
@@ -362,8 +386,8 @@ def combine_residue_xmls(
 
     All-GAFF goes through ParmEd, which merges at the parameter-set level and
     writes only the atom types the templates actually use. Anything else is
-    merged as finished XML instead - gaff, smirnoff and charmm share nothing
-    upstream of that.
+    merged as finished XML instead - gaff, smirnoff, espaloma and charmm share
+    nothing upstream of that.
     """
     gaff = {name for name, spec in specs.items() if spec.backend == "gaff"}
     other_names = sorted(set(specs) - gaff)
@@ -398,6 +422,7 @@ def parameterize_all(
     gaff_dat: str | None,
     timeout: float | None,
     base_forcefield: Sequence[str] = DEFAULT_BASE_FORCEFIELD,
+    espaloma_charge_method: str = espaloma.DEFAULT_ESPALOMA_CHARGE_METHOD,
 ) -> dict[str, ResidueArtifacts]:
     """Run every spec through its backend, in a stable order."""
     return {
@@ -409,6 +434,7 @@ def parameterize_all(
             gaff_dat=gaff_dat,
             timeout=timeout,
             base_forcefield=base_forcefield,
+            espaloma_charge_method=espaloma_charge_method,
         )
         for name in sorted(specs)
     }

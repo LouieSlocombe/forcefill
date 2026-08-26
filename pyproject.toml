@@ -7,7 +7,7 @@ name = "forcefill"
 # Bump on any API-visible change: openmmnqe installs this repo from git HEAD,
 # and this number is the only staleness signal an installed copy carries
 # (forcefill/__init__.py reads it back through the installed metadata).
-version = "0.2.0"
+version = "0.3.0"
 description = "Parameterize non-standard PDB residues (ligands, cofactors) into OpenMM force-field XML with AmberTools GAFF/AM1-BCC, OpenFF Sage or CHARMM CGenFF"
 readme = "README.md"
 license = "MIT"
@@ -27,7 +27,7 @@ dependencies = [
     "rdkit",
     # The smirnoff backend.
     "openff-toolkit >= 0.16",
-    "openmmforcefields >= 0.14",
+    "openmmforcefields >= 0.16",
 ]
 classifiers = [
     "Programming Language :: Python :: 3",
@@ -63,6 +63,7 @@ addopts = "-ra"
 markers = [
     "integration: runs the real AmberTools executables (antechamber/parmchk2); deselect with -m 'not integration'",
     "smirnoff: runs real OpenFF parameterization (slow); deselect with -m 'not smirnoff'",
+    "espaloma: runs the real espaloma model (needs the optional espaloma package and, on first use, a model download); deselect with -m 'not espaloma'",
 ]
 
 # Coverage is measured with `pytest --cov`; configured here so local runs and CI

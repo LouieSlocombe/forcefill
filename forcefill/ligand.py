@@ -30,7 +30,7 @@ from collections.abc import Mapping, Sequence
 
 from openmm import app, unit
 
-from . import _pipeline, charmm, ligand_files, smirnoff
+from . import _pipeline, charmm, espaloma, ligand_files, smirnoff
 from ._pipeline import ParameterizationResult, ResidueArtifacts
 from ._spec import (
     ATOM_TYPES,
@@ -38,6 +38,7 @@ from ._spec import (
     CHARGE_METHODS,
     CHARMM_FILE_SUFFIXES,
     DEFAULT_BASE_FORCEFIELD,
+    DEFAULT_ESPALOMA_FORCEFIELD,
     DEFAULT_SMIRNOFF_FORCEFIELD,
     ForceFieldSelection,
     LigandSpec,
@@ -48,7 +49,13 @@ from ._spec import (
     resolve_specs,
 )
 from .amber import DEFAULT_AMBERTOOLS_TIMEOUT, load_residue_template
-from .checks import MinimizationResult, minimize_with_forcefield_xml, validate_forcefield_xml
+from .checks import (
+    MinimizationResult,
+    _expand_virtual_sites,
+    minimize_with_forcefield_xml,
+    residue_templates_with_virtual_sites,
+    validate_forcefield_xml,
+)
 from .preflight import preflight_specs
 
 log = logging.getLogger(__name__)
@@ -120,14 +127,16 @@ def _ligand_topology(
     """Topology and coordinates for validating one ligand on its own.
 
     For gaff that comes from the mol2 antechamber wrote - the molecule as it was
-    actually parameterized - and for smirnoff from the molecule itself. A charmm
-    ligand has no Cartesian coordinates, so it returns None and only the graph
-    can be checked.
+    actually parameterized - and for smirnoff and espaloma from the molecule
+    itself. A charmm ligand has no Cartesian coordinates, so it returns None and
+    only the graph can be checked.
     """
     if spec.backend == "charmm":
         return charmm.ligand_topology(spec, base_forcefield), None
     if spec.backend == "smirnoff":
         return smirnoff.ligand_topology(spec)
+    if spec.backend == "espaloma":
+        return espaloma.ligand_topology(spec)
     structure = load_residue_template(artifacts.mol2, spec.name).to_structure()
     topology = structure.topology
     for residue in topology.residues():
@@ -144,6 +153,8 @@ def build_ligand_xml(
     atom_type: str = "gaff2",
     charge_method: str = "bcc",
     smirnoff_forcefield: ForceFieldSelection = DEFAULT_SMIRNOFF_FORCEFIELD,
+    espaloma_forcefield: ForceFieldSelection = DEFAULT_ESPALOMA_FORCEFIELD,
+    espaloma_charge_method: str = espaloma.DEFAULT_ESPALOMA_CHARGE_METHOD,
     charmm_files: Sequence[PathLike] = (),
     workdir: PathLike | None = None,
     cleanup: bool = False,
@@ -168,8 +179,8 @@ def build_ligand_xml(
             validation and minimization checks. Not used to decide what needs
             parameterizing - here that is the caller's list. Must be
             :data:`~forcefill.CHARMM_BASE_FORCEFIELD` for the charmm backend.
-        backend: ``"gaff"`` (default), ``"smirnoff"`` or ``"charmm"``;
-            per-ligand with ``LigandSpec(backend=...)``.
+        backend: ``"gaff"`` (default), ``"smirnoff"``, ``"charmm"`` or
+            ``"espaloma"``; per-ligand with ``LigandSpec(backend=...)``.
         atom_type: ``"gaff2"`` (default) or ``"gaff"``. gaff backend only.
         charge_method: antechamber charge method, default ``"bcc"``. gaff only.
         smirnoff_forcefield: SMIRNOFF force field for the smirnoff backend: an
@@ -178,6 +189,14 @@ def build_ligand_xml(
             ``forcefill.smirnoff.installed_smirnoff_forcefields()``), the path
             to an OFFXML file such as a bespoke force field from BespokeFit, or
             a sequence of either layered left to right.
+        espaloma_forcefield: Espaloma model for the espaloma backend: a name
+            (default :data:`~forcefill.DEFAULT_ESPALOMA_FORCEFIELD`; see
+            ``forcefill.espaloma.installed_espaloma_forcefields()``) or the path
+            to a ``.pt`` file. Always one, never a sequence. A name that is not
+            already cached in ``~/.espaloma`` is downloaded on first use.
+        espaloma_charge_method: Charge model for the espaloma backend, default
+            ``"nn"`` - espaloma's own prediction. See
+            ``forcefill.espaloma.ESPALOMA_CHARGE_METHODS``.
         charmm_files: CHARMM topology/parameter files shared by every charmm
             ligand; per-ligand stream files go in
             ``LigandSpec(charmm_files=...)`` and are appended after these.
@@ -215,6 +234,7 @@ def build_ligand_xml(
             antechamber_args=tuple(antechamber_args),
             backend=backend,
             forcefield=smirnoff_forcefield,
+            espaloma_forcefield=espaloma_forcefield,
             charmm_files=tuple(charmm_files),
             names=frozenset(requested),
         ),
@@ -242,6 +262,7 @@ def build_ligand_xml(
 
     gaff_dat = _pipeline.prepare_gaff_backend(specs, atom_type)
     smirnoff_profiles = _pipeline.prepare_smirnoff_backend(specs)
+    _pipeline.prepare_espaloma_backend(specs)
     _pipeline.check_backends_match_base(specs, base_forcefield, smirnoff_profiles)
 
     minimizations: dict[str, MinimizationResult] = {}
@@ -253,7 +274,14 @@ def build_ligand_xml(
         )
 
         artifacts = _pipeline.parameterize_all(
-            specs, {}, None, wd, gaff_dat=gaff_dat, timeout=timeout, base_forcefield=base_forcefield
+            specs,
+            {},
+            None,
+            wd,
+            gaff_dat=gaff_dat,
+            timeout=timeout,
+            base_forcefield=base_forcefield,
+            espaloma_charge_method=espaloma_charge_method,
         )
         residue_xmls = {name: art.xml for name, art in artifacts.items()}
 
@@ -264,8 +292,13 @@ def build_ligand_xml(
             # Parse the (large) base force field + new XML once; every check uses it.
             files = [*base_forcefield, combined]
             forcefield = app.ForceField(*files)
+            # A SMIRNOFF or Espaloma force field with virtual sites describes more
+            # particles than the molecule has atoms; the topology has to carry
+            # them or OpenMM matches nothing at all.
+            virtual_sites = bool(residue_templates_with_virtual_sites(combined))
             for name in sorted(specs):
                 topology, positions = _ligand_topology(specs[name], artifacts[name], base_forcefield)
+                topology, positions = _expand_virtual_sites(topology, positions, forcefield, needed=virtual_sites)
                 if validate:
                     validate_forcefield_xml(topology, combined, base_forcefield, forcefield=forcefield)
                 if minimize:
