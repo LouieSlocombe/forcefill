@@ -16,6 +16,9 @@ dist/
 coverage.xml
 htmlcov/
 
+# Sphinx build output
+docs/_build/
+
 # Environments
 .env
 .venv

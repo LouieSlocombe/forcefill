@@ -1,0 +1,18 @@
+# Documentation build dependencies.
+#
+# Deliberately not a [project.optional-dependencies] extra: `pip install .[docs]`
+# would also resolve the runtime dependencies, and openmmforcefields >= 0.16 is
+# not on PyPI at all - which is the whole reason conf.py mocks it.
+
+sphinx >= 8.1, < 10
+furo >= 2024.8.6
+myst-parser >= 4.0, < 6
+sphinx-copybutton >= 0.5.2
+sphinx-design >= 0.6
+
+# Installed for real rather than mocked, unlike the other runtime dependencies:
+# forcefill/checks.py evaluates `unit.kilojoule_per_mole / unit.nanometer` at
+# import time, and Sphinx's mock objects implement attribute access and calls but
+# not division. Already present in the conda development environment, where pip
+# sees conda-forge's dist-info and skips it.
+openmm >= 8.1

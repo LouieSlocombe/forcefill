@@ -47,6 +47,7 @@ dev = ["ruff == 0.16.2", "pre-commit"]
 [project.urls]
 Homepage = "https://github.com/LouieSlocombe/forcefill"
 Repository = "https://github.com/LouieSlocombe/forcefill"
+Documentation = "https://forcefill.readthedocs.io"
 
 [tool.setuptools.packages.find]
 where = ["."]
@@ -122,6 +123,9 @@ ignore = [
 [tool.ruff.lint.per-file-ignores]
 # The runnable examples talk to the user through print().
 "examples/*" = ["T20"]
+# Sphinx's conf.py is a settings file, and `copyright` is a name Sphinx requires
+# that happens to shadow the builtin.
+"docs/conf.py" = ["A001"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["forcefill"]

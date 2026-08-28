@@ -1,0 +1,28 @@
+# Read the Docs build. Mirrored by the `docs` job in .github/workflows/ci.yml —
+# keep the two in step, that job is what catches a break before it reaches here.
+version: 2
+
+build:
+  os: ubuntu-24.04
+  tools:
+    # The floor every docs dependency agrees on: Sphinx 9 needs >= 3.12, and
+    # openmm publishes cp312 manylinux wheels.
+    python: "3.12"
+  jobs:
+    post_install:
+      # `pip install .` cannot work here: openmmforcefields >= 0.16 does not
+      # exist on PyPI (0.15.1 is the newest, sdist-only) and parmed is sdist-only
+      # too. autodoc needs the source plus the installed metadata and nothing
+      # else, so install without dependencies and let docs/conf.py mock the rest.
+      # openmm is the one exception and comes from docs/requirements.txt.
+      - pip install --no-deps -e .
+
+sphinx:
+  configuration: docs/conf.py
+  # Matches `sphinx-build -W` in CI. A docstring cross-reference that stops
+  # resolving is a broken link on the site, so it should fail the build.
+  fail_on_warning: true
+
+python:
+  install:
+    - requirements: docs/requirements.txt

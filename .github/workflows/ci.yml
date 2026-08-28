@@ -79,3 +79,28 @@ jobs:
           cd "$(mktemp -d)"  # import from outside the source tree
           python -c "import forcefill; print(forcefill.__version__)"
           python -c "import importlib.resources as r; assert r.files('forcefill').joinpath('py.typed').is_file()"
+
+  # Mirrors the Read the Docs build (.readthedocs.yaml): pip only, the package
+  # installed --no-deps, and parmed/rdkit/openff/openmmforcefields mocked in
+  # docs/conf.py because two of them cannot be installed from PyPI at all.
+  # Deliberately not the micromamba environment the jobs above use - a real
+  # parmed or openff install here would hide a broken mock until RTD failed.
+  docs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          # The floor every docs dependency agrees on; keep in step with
+          # build.tools.python in .readthedocs.yaml.
+          python-version: "3.12"
+      - run: pip install -r docs/requirements.txt
+      - run: pip install --no-deps -e .
+      # -W is the same gate as fail_on_warning in .readthedocs.yaml: a docstring
+      # cross-reference that stops resolving is a broken link on the site.
+      - run: sphinx-build -W --keep-going -b html docs docs/_build/html
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: docs-html
+          path: docs/_build/html
