@@ -2,6 +2,8 @@
 
 [![ci](https://github.com/LouieSlocombe/forcefill/actions/workflows/ci.yml/badge.svg)](https://github.com/LouieSlocombe/forcefill/actions/workflows/ci.yml)
 [![docs](https://readthedocs.org/projects/forcefill/badge/?version=latest)](https://forcefill.readthedocs.io/en/latest/)
+[![pypi](https://img.shields.io/pypi/v/forcefill.svg)](https://pypi.org/project/forcefill/)
+[![python](https://img.shields.io/pypi/pyversions/forcefill.svg)](https://pypi.org/project/forcefill/)
 
 Turn ligands into a ready-to-use [OpenMM](https://openmm.org) force-field XML —
 either the non-standard residues (ligands, cofactors, hetero molecules) found in
@@ -97,6 +99,7 @@ not a Python package (the `antechamber` and `parmchk2` executables must be on
 `PATH` for the `gaff` backend), and `espaloma` is optional because it pulls in
 PyTorch. The full list, and the reason the `openmmforcefields` floor is 0.16, is
 in [the installation guide](https://forcefill.readthedocs.io/en/latest/installation.html).
+
 ## Quickstart
 
 ```python
@@ -142,7 +145,14 @@ pytest                                         # everything, including real ante
 Style is enforced by ruff (`pip install -e '.[dev]' && pre-commit install`).
 
 The docs build is pip-only and separate from the conda environment — see
-[Contributing](https://forcefill.readthedocs.io/en/latest/contributing.html).
+[Contributing](https://forcefill.readthedocs.io/en/latest/contributing.html),
+which also has the release process.
+
+## Changelog
+
+Every release is described in [CHANGELOG.md](CHANGELOG.md). The public API is
+everything exported from `forcefill/__init__.py`, and it follows semantic
+versioning from 1.0.0 on.
 
 ## Roadmap
 

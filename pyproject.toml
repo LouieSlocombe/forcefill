@@ -4,10 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "forcefill"
-# Bump on any API-visible change: openmmnqe installs this repo from git HEAD,
-# and this number is the only staleness signal an installed copy carries
-# (forcefill/__init__.py reads it back through the installed metadata).
-version = "0.3.0"
+# The single source of truth for the version: forcefill/__init__.py and
+# docs/conf.py read it back through the installed metadata rather than repeating
+# it. Bump it here, add the CHANGELOG.md entry, then tag `v<version>` —
+# .github/workflows/release.yml refuses to publish unless the three agree.
+# Bump on any API-visible change even between releases: consumers that install
+# this repo from git HEAD carry no other staleness signal.
+version = "1.0.0"
 description = "Parameterize non-standard PDB residues (ligands, cofactors) into OpenMM force-field XML with AmberTools GAFF/AM1-BCC, OpenFF Sage or CHARMM CGenFF"
 readme = "README.md"
 license = "MIT"
@@ -30,11 +33,20 @@ dependencies = [
     "openmmforcefields >= 0.16",
 ]
 classifiers = [
+    "Development Status :: 5 - Production/Stable",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3 :: Only",
+    # The floor is requires-python; the ceiling is what CI actually runs.
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Intended Audience :: Science/Research",
     "Topic :: Scientific/Engineering :: Chemistry",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
     "Operating System :: OS Independent",
+    # Backs the py.typed marker in package-data below.
+    "Typing :: Typed",
 ]
 
 [project.optional-dependencies]
@@ -48,6 +60,8 @@ dev = ["ruff == 0.16.2", "pre-commit"]
 Homepage = "https://github.com/LouieSlocombe/forcefill"
 Repository = "https://github.com/LouieSlocombe/forcefill"
 Documentation = "https://forcefill.readthedocs.io"
+Changelog = "https://github.com/LouieSlocombe/forcefill/blob/main/CHANGELOG.md"
+Issues = "https://github.com/LouieSlocombe/forcefill/issues"
 
 [tool.setuptools.packages.find]
 where = ["."]
@@ -55,6 +69,7 @@ include = ["forcefill*"]
 
 # Non-Python files shipped in wheels: the PEP 561 typing marker. Test fixtures
 # stay in the source repository under tests/data/ — run the suite from a checkout.
+# The sdist is MANIFEST.in, which says the same thing for the same reason.
 [tool.setuptools.package-data]
 forcefill = ["py.typed"]
 
@@ -123,6 +138,12 @@ ignore = [
 [tool.ruff.lint.per-file-ignores]
 # The runnable examples talk to the user through print().
 "examples/*" = ["T20"]
+# The release helpers hand their result to the workflow shell on stdout; print()
+# is their interface, not debugging left behind. I001 because `target-version`
+# is py310, where tomllib is not stdlib, so isort files it under third-party and
+# then wants it in its own block — misleading. These two scripts run on the 3.12
+# that .github/workflows/release.yml pins, never on the package's floor.
+".github/*.py" = ["T20", "I001"]
 # Sphinx's conf.py is a settings file, and `copyright` is a name Sphinx requires
 # that happens to shadow the builtin.
 "docs/conf.py" = ["A001"]

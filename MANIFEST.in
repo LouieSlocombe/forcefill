@@ -1,0 +1,19 @@
+# What goes into the sdist beyond the package itself. The wheel is unaffected —
+# that is [tool.setuptools.package-data] in pyproject.toml.
+#
+# Without this file setuptools falls back to a distutils default that picks up
+# `tests/test_*.py` and nothing else, which ships a suite that cannot even be
+# collected: conftest.py, helpers.py, tests/data/ and the examples/data/ fixtures
+# two of the tests read are all missing. Ship it whole or not at all — and not at
+# all is right here, because the suite cannot run from an sdist install in any
+# case: it needs AmberTools, which is not a Python package, and
+# openmmforcefields >= 0.16, which does not exist on PyPI. Run it from a checkout
+# (see docs/contributing.md).
+prune tests
+
+include CHANGELOG.md
+
+# Never useful to a consumer.
+global-exclude *.py[cod]
+global-exclude .DS_Store
+prune **/__pycache__

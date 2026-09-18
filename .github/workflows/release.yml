@@ -1,0 +1,125 @@
+# Publishes a release. Nothing here runs on a normal push: the trigger is a
+# `v<version>` tag, and the first job refuses to go further unless that tag, the
+# version in pyproject.toml and the CHANGELOG.md entry all agree.
+#
+#   # after CI is green on main
+#   git tag -a v1.0.0 -m "forcefill 1.0.0" && git push origin v1.0.0
+#
+# Uploads use PyPI Trusted Publishing (OIDC), so there is no API token in the
+# repository secrets. The one-time PyPI setup is in docs/contributing.md and has
+# to be done before the first tag; without it the `pypi` job fails at the upload
+# step and no GitHub release is created. The built artifacts are still on the
+# workflow run, so the fix is to configure PyPI and re-run the failed jobs —
+# deleting and re-pushing the tag is not needed.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  # Dry run: builds and checks everything, publishes nothing.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # Cheap and first, because every mistake this catches is one that would
+  # otherwise be caught by an immutable file on PyPI. A version can never be
+  # re-uploaded, so the wrong number published is the wrong number forever.
+  guard:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"  # tomllib, so nothing needs installing
+      - id: check
+        run: |
+          version=$(python .github/check_release_version.py)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "releasing forcefill $version"
+
+  # The same environment and the same import check as the `build` job in ci.yml:
+  # a wheel that installs but does not import must not reach PyPI, and only the
+  # conda stack can import it (AmberTools is not a Python package).
+  build:
+    needs: guard
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash -el {0}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-file: environment.yml
+          cache-environment: true
+      - run: python -m build
+      - name: Install the built wheel and import it
+        run: |
+          pip install --force-reinstall --no-deps dist/*.whl
+          cd "$(mktemp -d)"  # import from outside the source tree
+          python -c "import forcefill; print(forcefill.__version__)"
+          python -c "import importlib.resources as r; assert r.files('forcefill').joinpath('py.typed').is_file()"
+      # The version the wheel reports is the one users will see; check it against
+      # the tag rather than trusting that the build picked up the right metadata.
+      - name: Check the installed version matches the tag
+        run: |
+          installed=$(python -c "import forcefill; print(forcefill.__version__)")
+          test "$installed" = "${{ needs.guard.outputs.version }}" \
+            || { echo "wheel reports $installed, expected ${{ needs.guard.outputs.version }}"; exit 1; }
+      # Catches the README rendering badly on the project page, which is not
+      # fixable after upload without burning a version number.
+      - name: Check the distribution metadata
+        run: |
+          pip install twine
+          twine check --strict dist/*
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  # Trusted Publishing: the `id-token: write` permission below is what mints the
+  # short-lived credential, so no token is stored anywhere. Skipped on a manual
+  # dry run.
+  pypi:
+    needs: [guard, build]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/forcefill
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
+
+  # Last, so a failed upload does not leave a release announcing a version that
+  # is not on PyPI.
+  github-release:
+    needs: [guard, pypi]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      # The release notes are the CHANGELOG section, not a generated commit list:
+      # it is already written, and it is what the changelog is for.
+      - name: Extract the changelog section
+        run: python .github/release_notes.py "${{ needs.guard.outputs.version }}" > release-notes.md
+      - uses: softprops/action-gh-release@v2
+        with:
+          body_path: release-notes.md
+          files: dist/*
+          fail_on_unmatched_files: true

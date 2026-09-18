@@ -61,3 +61,52 @@ python -m http.server -d docs/_build/html 8000
 CI, which reproduces the Read the Docs environment exactly — mocks included — so
 that a mock which stops working fails on a pull request rather than on the docs
 site.
+
+## Releasing
+
+Versions are read from one place — `version` in `pyproject.toml`.
+`forcefill/__init__.py` and `docs/conf.py` both read it back through the
+installed metadata, so there is nothing else to edit.
+
+1. Add the new section to `CHANGELOG.md`, moving anything under `[Unreleased]`
+   into it, and update the two link definitions at the bottom of the file.
+2. Bump `version` in `pyproject.toml`. From 1.0.0 on this follows semantic
+   versioning, where the public API is everything exported from
+   `forcefill/__init__.py`.
+3. Commit, push, and let CI go green on `main`.
+4. Tag and push:
+
+   ```bash
+   git tag -a v1.2.3 -m "forcefill 1.2.3"
+   git push origin v1.2.3
+   ```
+
+The tag triggers `.github/workflows/release.yml`, which refuses to go any
+further unless the tag, `pyproject.toml` and `CHANGELOG.md` agree on the version
+— a version uploaded to PyPI can never be re-uploaded, so the wrong number
+published is the wrong number forever. It then builds the sdist and wheel in the
+conda environment, installs the wheel and imports it from outside the source
+tree, uploads to PyPI, and creates a GitHub release whose notes are the
+changelog section.
+
+`workflow_dispatch` runs the same checks and the same build without publishing
+anything, which is the way to try a change to the workflow itself.
+
+### One-time PyPI setup
+
+Uploads use [Trusted Publishing](https://docs.pypi.org/trusted-publishers/), so
+no API token is stored in the repository. Before the first tag, on PyPI:
+
+1. Create a [pending publisher](https://pypi.org/manage/account/publishing/) for
+   the project name `forcefill` — repository owner `LouieSlocombe`, repository
+   `forcefill`, workflow `release.yml`, environment `pypi`. "Pending" is the
+   right choice while the project does not exist yet; PyPI creates it on the
+   first successful upload.
+2. On GitHub, create an environment named `pypi` under **Settings →
+   Environments**. A required-reviewer rule there is worth adding: it turns
+   every upload into something a human approves.
+
+If this has not been done when the tag is pushed, the `pypi` job fails at the
+upload step and no GitHub release is created. The built artifacts are still
+attached to the workflow run, so the fix is to configure PyPI and re-run the
+failed jobs — the tag does not need deleting and re-pushing.

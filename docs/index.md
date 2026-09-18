@@ -73,4 +73,5 @@ guide/index
 examples
 api/index
 contributing
+changelog
 ```
