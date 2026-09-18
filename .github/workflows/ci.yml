@@ -13,16 +13,20 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # Pinned in three places that must agree: here, the ruff rev in
       # .pre-commit-config.yaml, and the `dev` extra in pyproject.toml. ruff's
       # formatter output changes between releases, so a skew lets a locally-clean
       # tree fail the format gate below.
-      - uses: astral-sh/ruff-action@v3
+      #
+      # The action itself is pinned to an exact release, unlike every other
+      # action here: from v4 on, ruff-action ships immutable releases and no
+      # longer publishes a moving `v4` major tag, so `@v4` is a 404.
+      - uses: astral-sh/ruff-action@v4.1.0
         with:
           version: "0.16.2"
           args: "check ."
-      - uses: astral-sh/ruff-action@v3
+      - uses: astral-sh/ruff-action@v4.1.0
         with:
           version: "0.16.2"
           args: "format --check ."
@@ -40,8 +44,8 @@ jobs:
       run:
         shell: bash -el {0}
     steps:
-      - uses: actions/checkout@v4
-      - uses: mamba-org/setup-micromamba@v2
+      - uses: actions/checkout@v7
+      - uses: mamba-org/setup-micromamba@v3
         with:
           environment-file: environment.yml
           create-args: python=${{ matrix.python }}
@@ -53,7 +57,7 @@ jobs:
       # with-AmberTools number (92% when adopted); raise it as coverage improves.
       - name: Run tests with coverage
         run: pytest --cov --cov-report=term --cov-report=xml --cov-fail-under=85
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: coverage-py${{ matrix.python }}
@@ -67,8 +71,8 @@ jobs:
       run:
         shell: bash -el {0}
     steps:
-      - uses: actions/checkout@v4
-      - uses: mamba-org/setup-micromamba@v2
+      - uses: actions/checkout@v7
+      - uses: mamba-org/setup-micromamba@v3
         with:
           environment-file: environment.yml
           cache-environment: true
@@ -88,8 +92,8 @@ jobs:
   docs:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           # The floor every docs dependency agrees on; keep in step with
           # build.tools.python in .readthedocs.yaml.
@@ -99,7 +103,7 @@ jobs:
       # -W is the same gate as fail_on_warning in .readthedocs.yaml: a docstring
       # cross-reference that stops resolving is a broken link on the site.
       - run: sphinx-build -W --keep-going -b html docs docs/_build/html
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: docs-html
