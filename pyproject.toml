@@ -18,7 +18,7 @@ license-files = ["LICENSE"]
 authors = [
     { name = "Louie Slocombe", email = "louies@hotmail.co.uk" },
 ]
-requires-python = ">= 3.10"
+requires-python = ">= 3.12"
 dependencies = [
     # All required at import time. conda-forge is the recommended install route:
     # the AmberTools executables the gaff backend calls (antechamber, parmchk2)
@@ -37,8 +37,6 @@ classifiers = [
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3 :: Only",
     # The floor is requires-python; the ceiling is what CI actually runs.
-    "Programming Language :: Python :: 3.10",
-    "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Intended Audience :: Science/Research",
@@ -99,7 +97,7 @@ exclude_also = [
 # extra above — keep the three in step.
 [tool.ruff]
 line-length = 120
-target-version = "py310"
+target-version = "py312"
 
 # ruff's current defaults, pinned so that a future release which changes one
 # cannot silently reformat the whole tree.
@@ -139,11 +137,8 @@ ignore = [
 # The runnable examples talk to the user through print().
 "examples/*" = ["T20"]
 # The release helpers hand their result to the workflow shell on stdout; print()
-# is their interface, not debugging left behind. I001 because `target-version`
-# is py310, where tomllib is not stdlib, so isort files it under third-party and
-# then wants it in its own block — misleading. These two scripts run on the 3.12
-# that .github/workflows/release.yml pins, never on the package's floor.
-".github/*.py" = ["T20", "I001"]
+# is their interface, not debugging left behind.
+".github/*.py" = ["T20"]
 # Sphinx's conf.py is a settings file, and `copyright` is a name Sphinx requires
 # that happens to shadow the builtin.
 "docs/conf.py" = ["A001"]

@@ -8,8 +8,8 @@ Prints the version on stdout for the workflow to capture; exits non-zero with th
 disagreement on stderr. ``GITHUB_REF`` is only checked when it names a tag, so a
 manual dry run validates the changelog without needing one.
 
-Needs Python >= 3.11 for ``tomllib`` - below the package's own 3.10 floor on
-purpose, because this only ever runs on the 3.12 the release workflow pins.
+Uses ``tomllib``, so nothing needs installing: it is stdlib on the package's own
+3.12 floor and on the 3.12 the release workflow pins.
 
     python .github/check_release_version.py
 """

@@ -8,6 +8,14 @@ of it requires a major bump.
 
 ## [Unreleased]
 
+### Changed
+
+- **The minimum supported Python is now 3.12**, up from 3.10. The CI test matrix
+  moves with it (3.12 and 3.13), as do `environment.yml` and ruff's
+  `target-version`. Nothing in the package needed 3.10 or 3.11 support dropped
+  for its own sake; the floor now matches the one the docs build and the release
+  workflow already pinned.
+
 ## [1.0.0] - 2026-09-18
 
 First release. The API below is now covered by the compatibility promise above.

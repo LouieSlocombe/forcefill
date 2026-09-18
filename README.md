@@ -94,7 +94,7 @@ conda install -c conda-forge openmm parmed ambertools
 pip install forcefill
 ```
 
-Requires Python ≥ 3.10. Two things are not ordinary dependencies: AmberTools is
+Requires Python ≥ 3.12. Two things are not ordinary dependencies: AmberTools is
 not a Python package (the `antechamber` and `parmchk2` executables must be on
 `PATH` for the `gaff` backend), and `espaloma` is optional because it pulls in
 PyTorch. The full list, and the reason the `openmmforcefields` floor is 0.16, is

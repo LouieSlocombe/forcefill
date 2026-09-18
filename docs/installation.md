@@ -15,7 +15,7 @@ conda install -c conda-forge openmm parmed ambertools
 pip install forcefill
 ```
 
-Requires Python ≥ 3.10 and, at import time, `openmm >= 7.6`, `parmed >= 3.4`,
+Requires Python ≥ 3.12 and, at import time, `openmm >= 7.6`, `parmed >= 3.4`,
 `rdkit`, `openff-toolkit >= 0.16` and `openmmforcefields >= 0.16` — all ordinary
 dependencies, with no extras to pick and nothing imported lazily.
 

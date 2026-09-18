@@ -37,9 +37,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # The floor and the ceiling; requires-python in pyproject.toml is the
+        # floor, and this is the "what CI actually runs" the classifiers claim.
         # If conda-forge cannot solve ambertools for a new Python yet, drop that
         # leg to the newest solvable version rather than dropping ambertools.
-        python: ["3.10", "3.13"]
+        python: ["3.12", "3.13"]
     defaults:
       run:
         shell: bash -el {0}
@@ -95,8 +97,8 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
         with:
-          # The floor every docs dependency agrees on; keep in step with
-          # build.tools.python in .readthedocs.yaml.
+          # The floor every docs dependency agrees on, and now the package's own
+          # floor too; keep in step with build.tools.python in .readthedocs.yaml.
           python-version: "3.12"
       - run: pip install -r docs/requirements.txt
       - run: pip install --no-deps -e .

@@ -6,7 +6,8 @@ build:
   os: ubuntu-24.04
   tools:
     # The floor every docs dependency agrees on: Sphinx 9 needs >= 3.12, and
-    # openmm publishes cp312 manylinux wheels.
+    # openmm publishes cp312 manylinux wheels. Also the package's own floor
+    # (requires-python in pyproject.toml), though the two are free to diverge.
     python: "3.12"
   jobs:
     post_install:
