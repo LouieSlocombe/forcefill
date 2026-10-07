@@ -8,6 +8,8 @@ of it requires a major bump.
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-10-07
+
 ### Changed
 
 - **The minimum supported Python is now 3.12**, up from 3.10. The CI test matrix
@@ -89,5 +91,6 @@ First release. The API below is now covered by the compatibility promise above.
 - Re-running into an existing working directory repeats finished `antechamber`
   jobs; nothing is cached between runs.
 
-[Unreleased]: https://github.com/LouieSlocombe/forcefill/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/LouieSlocombe/forcefill/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/LouieSlocombe/forcefill/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/LouieSlocombe/forcefill/releases/tag/v1.0.0

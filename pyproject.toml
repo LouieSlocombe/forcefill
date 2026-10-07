@@ -10,7 +10,7 @@ name = "forcefill"
 # .github/workflows/release.yml refuses to publish unless the three agree.
 # Bump on any API-visible change even between releases: consumers that install
 # this repo from git HEAD carry no other staleness signal.
-version = "1.0.0"
+version = "1.1.0"
 description = "Parameterize non-standard PDB residues (ligands, cofactors) into OpenMM force-field XML with AmberTools GAFF/AM1-BCC, OpenFF Sage or CHARMM CGenFF"
 readme = "README.md"
 license = "MIT"
