@@ -116,7 +116,9 @@ def _rdkit_mol_from_file(path: Path) -> Chem.Mol | None:
         suffix = path.suffix.lower()
         if suffix in (".sdf", ".sd", ".mol"):
             supplier = Chem.SDMolSupplier(str(path), removeHs=False, sanitize=True)
-            mols = [m for m in supplier if m is not None]
+            # A failed first record must reach the text fallback, not silently
+            # select a different molecule later in the file.
+            mols = list(supplier)
             if len(mols) > 1:
                 log.warning(
                     "%s holds %d molecules; reading the first. Use split_multi_sdf() to parameterize them all.",
@@ -188,7 +190,8 @@ def _read_sdf_v3000(lines: list[str], path: Path) -> LigandFileInfo:
 
 def _read_sdf(path: Path) -> LigandFileInfo:
     """Parse the first molecule of an SDF/MOL file without RDKit."""
-    lines = path.read_text().splitlines()
+    records = _sdf_records(path)
+    lines = records[0] if records else []
     if len(lines) < 4:
         raise ValueError(f"{path} is too short to be an SDF/MOL file.")
     counts = lines[3]
@@ -295,10 +298,13 @@ def _read_pdb(path: Path) -> LigandFileInfo:
 def inspect_ligand_file(path: PathLike, *, prefer_rdkit: bool = True) -> LigandFileInfo:
     """Read elements, bonds, coordinates and formal charge out of a ligand file.
 
-    Uses RDKit when it is installed - it perceives formal charges reliably and
-    handles the format corners - and falls back to a small text parser for SDF
-    (V2000/V3000) and MOL2, and to OpenMM's reader for PDB. Only the first
+    Uses RDKit to perceive formal charges and handle format corners, falling
+    back to text readers for SDF (V2000/V3000), ParmEd for MOL2, and OpenMM for
+    PDB when necessary. Only the first
     molecule of a multi-molecule file is read; see :func:`split_multi_sdf`.
+    For SDF, empty delimiter-separated records are ignored and a blank title
+    is preserved. If RDKit cannot read the first molecule, the text reader
+    inspects that same molecule; a later readable molecule never replaces it.
 
     Args:
         path: The ligand file. Suffix decides the format.
