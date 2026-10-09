@@ -15,36 +15,34 @@ pytest.importorskip("openmm")
 
 from openmm import Vec3, app, unit
 
-from forcefill import topology
+from forcefill import clean_topology, topology
 from tests.helpers import METHANOL_ATOMS, METHANOL_XYZ, methanol_positions, methanol_residue
 
 
-class StubResidue:
-    """Duck-types the Residue surface ``_classify_unmatched`` uses: ``.name``, ``.atoms()``, ``.external_bonds()``."""
-
-    def __init__(self, name: str, n_atoms: int = 2, external_bonds: int = 0) -> None:
-        self.name = name
-        self._atoms = [object() for _ in range(n_atoms)]
-        self._external = [object() for _ in range(external_bonds)]
-
-    def atoms(self) -> Iterator[object]:
-        return iter(self._atoms)
-
-    def external_bonds(self) -> Iterator[object]:
-        return iter(self._external)
+def _residue(name: str, n_atoms: int = 2, external_bonds: int = 0) -> app.topology.Residue:
+    """Build a residue and, optionally, bonds to atoms in a neighbouring residue."""
+    top = app.Topology()
+    chain = top.addChain()
+    residue = top.addResidue(name, chain)
+    atoms = [top.addAtom(f"C{i}", app.element.carbon, residue) for i in range(n_atoms)]
+    if external_bonds:
+        neighbour = top.addResidue("PRT", chain)
+        for i in range(external_bonds):
+            top.addBond(atoms[0], top.addAtom(f"N{i}", app.element.nitrogen, neighbour))
+    return residue
 
 
 # -- classification --------------------------------------------------------
 
 
 def test_classify_ligand_is_parameterized() -> None:
-    to_param, skipped = topology._classify_unmatched([StubResidue("LIG", n_atoms=10)])
+    to_param, skipped = topology._classify_unmatched([_residue("LIG", n_atoms=10)])
     assert list(to_param) == ["LIG"]
     assert skipped == {}
 
 
 def test_classify_standard_residue_is_skipped() -> None:
-    to_param, skipped = topology._classify_unmatched([StubResidue("ALA", n_atoms=5)])
+    to_param, skipped = topology._classify_unmatched([_residue("ALA", n_atoms=5)])
     assert to_param == {}
     assert "repair the structure" in skipped["ALA"]
 
@@ -54,26 +52,26 @@ def test_classify_charmm_spellings_are_standard(name: str) -> None:
     # A structure prepared for CHARMM names histidine HSD/HSE/HSP and the bases
     # ADE/CYT/GUA/THY/URA. Without those, an incomplete protein residue would be
     # sent to a backend instead of reported as needing repair.
-    to_param, skipped = topology._classify_unmatched([StubResidue(name, n_atoms=8)])
+    to_param, skipped = topology._classify_unmatched([_residue(name, n_atoms=8)])
     assert to_param == {}
     assert "repair the structure" in skipped[name]
 
 
 def test_classify_monatomic_is_skipped() -> None:
-    to_param, skipped = topology._classify_unmatched([StubResidue("ZN", n_atoms=1)])
+    to_param, skipped = topology._classify_unmatched([_residue("ZN", n_atoms=1)])
     assert to_param == {}
     assert "monatomic" in skipped["ZN"]
 
 
 def test_classify_covalently_linked_is_skipped() -> None:
-    to_param, skipped = topology._classify_unmatched([StubResidue("PTM", n_atoms=8, external_bonds=1)])
+    to_param, skipped = topology._classify_unmatched([_residue("PTM", n_atoms=8, external_bonds=1)])
     assert to_param == {}
     assert "covalently bonded" in skipped["PTM"]
 
 
 def test_classify_picks_most_complete_copy() -> None:
-    small = StubResidue("LIG", n_atoms=4)
-    big = StubResidue("LIG", n_atoms=9)
+    small = _residue("LIG", n_atoms=4)
+    big = _residue("LIG", n_atoms=9)
     to_param, skipped = topology._classify_unmatched([small, big])
     assert to_param["LIG"] is big
     assert skipped == {}
@@ -82,16 +80,81 @@ def test_classify_picks_most_complete_copy() -> None:
 def test_classify_skips_if_any_copy_linked() -> None:
     # The representative (most atoms) is free-standing, but another copy is
     # covalently linked: the name must still be skipped.
-    free_big = StubResidue("SUG", n_atoms=12)
-    linked_small = StubResidue("SUG", n_atoms=11, external_bonds=1)
+    free_big = _residue("SUG", n_atoms=12)
+    linked_small = _residue("SUG", n_atoms=11, external_bonds=1)
     to_param, skipped = topology._classify_unmatched([free_big, linked_small])
     assert to_param == {}
     assert "covalently bonded" in skipped["SUG"]
     assert "1 of 2 copies" in skipped["SUG"]
 
 
+def test_external_bond_counts_ignore_internal_bonds_and_count_both_ends() -> None:
+    top = app.Topology()
+    chain = top.addChain()
+    first, second, third, isolated = [top.addResidue(name, chain) for name in ("LIG", "LIG", "OTH", "FREE")]
+    atoms = [[top.addAtom(f"C{i}", app.element.carbon, res) for i in range(2)] for res in top.residues()]
+    for pair in atoms:
+        top.addBond(*pair)
+    top.addBond(atoms[0][0], atoms[1][0])
+    top.addBond(atoms[0][1], atoms[1][1])
+    top.addBond(atoms[1][0], atoms[2][0])
+
+    counts = topology._external_bond_counts(top)
+
+    assert counts == {first: 2, second: 3, third: 1}
+    assert isolated not in counts
+    assert topology._external_bond_counts(app.Topology()) == {}
+
+
+def test_classify_does_not_confuse_indices_from_different_topologies() -> None:
+    linked = _residue("LINK", external_bonds=2)
+    free = _residue("FREE")
+    assert linked.index == free.index
+
+    to_param, skipped = topology._classify_unmatched([linked, free])
+
+    assert to_param == {"FREE": free}
+    assert list(skipped) == ["LINK"]
+    assert "1 of 1 copies" in skipped["LINK"]
+
+
+def test_classify_scans_each_distinct_topology_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    first = _residue("LIG", external_bonds=1)
+    top = first.chain.topology
+    neighbour = list(top.residues())[1]
+    original_bonds = top.bonds
+    traversals = 0
+
+    def counted_bonds() -> Iterator[app.topology.Bond]:
+        nonlocal traversals
+        traversals += 1
+        return original_bonds()
+
+    monkeypatch.setattr(top, "bonds", counted_bonds)
+    topology._classify_unmatched([first, neighbour])
+
+    assert traversals == 1
+
+
+def test_cleaning_keeps_linked_copies_while_parameterization_skips_the_name() -> None:
+    linked = _residue("GOL", external_bonds=2)
+    top = linked.chain.topology
+    free = top.addResidue("GOL", linked.chain)
+    for i in range(2):
+        top.addAtom(f"C{i}", app.element.carbon, free)
+    positions = unit.Quantity([Vec3(i, 0, 0) for i in range(top.getNumAtoms())], unit.angstrom)
+
+    _, _, cleaning = clean_topology(top, positions)
+    to_param, skipped = topology._classify_unmatched([linked, free])
+
+    assert cleaning.removed == {"GOL": ("additive", 1)}
+    assert "2 neighbouring atom(s)" in cleaning.retained["GOL"]
+    assert to_param == {}
+    assert "1 of 2 copies" in skipped["GOL"]
+
+
 def test_warn_unused_overrides(caplog: pytest.LogCaptureFixture) -> None:
-    to_param = {"LIG": StubResidue("LIG")}
+    to_param = {"LIG": _residue("LIG")}
     skipped = {"ZN": "monatomic species - ..."}
     with caplog.at_level(logging.WARNING):
         topology._warn_unused_overrides(

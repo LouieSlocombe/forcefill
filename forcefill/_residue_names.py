@@ -127,89 +127,7 @@ _NUCLEIC_ACIDS = frozenset(
 #: these names are almost always incomplete structures, not new chemistry.
 STANDARD_RESIDUES = _AMINO_ACIDS | _NUCLEIC_ACIDS | WATER_RESIDUES
 
-#: Monatomic salt ions: group-1 cations and group-17 anions, plus the CHARMM and
-#: Amber aliases. They come from the buffer or from neutralizing the box, occupy
-#: no defined site, coordinate nothing directionally, and get re-added by
-#: ``Modeller.addSolvent`` anyway - so the cleaner removes them by default.
-BULK_ION_RESIDUES = frozenset(
-    [
-        "NA",
-        "NA+",
-        "SOD",
-        "K",
-        "K+",
-        "POT",
-        "LI",
-        "LI+",
-        "LIT",
-        "RB",
-        "RB+",
-        "RUB",
-        "CS",
-        "CS+",
-        "CES",
-        "CL",
-        "CL-",
-        "CLA",
-        "BR",
-        "BR-",
-        "IOD",
-        "I",
-        "F",
-    ]
-)
-
-#: Metals that are frequently structural or catalytic: buried, directionally
-#: coordinated, often required for the fold or the chemistry (trypsin's Ca2+,
-#: PDB 3PTB residue CA 480). Kept by default and reported in
-#: ``CleaningResult.retained``, because deleting a needed metal is silent and
-#: wrong while keeping an unwanted one is visible and reversible. The phasing
-#: heavy atoms (Hg, Pt, Au, Pb, lanthanides) sit here for the same reason.
-STRUCTURAL_METAL_RESIDUES = frozenset(
-    [
-        "CA",
-        "CAL",
-        "MG",
-        "ZN",
-        "ZN2",
-        "MN",
-        "MN3",
-        "FE",
-        "FE2",
-        "CU",
-        "CU1",
-        "NI",
-        "NI2",
-        "CO",
-        "3CO",
-        "CD",
-        "CD2",
-        "HG",
-        "PB",
-        "PT",
-        "AU",
-        "AG",
-        "SR",
-        "BA",
-        "BAR",
-        "MO",
-        "W",
-        "V",
-        "CR",
-        "SM",
-        "EU",
-        "GD",
-        "YB",
-        "TB",
-        "LA",
-        "CE",
-    ]
-)
-
-#: Ion residue name -> element symbol. Every name in :data:`BULK_ION_RESIDUES`
-#: and :data:`STRUCTURAL_METAL_RESIDUES` appears here, so an ion is never deleted
-#: on its name alone: its single atom must carry the matching element too.
-ION_ELEMENTS = {
+_BULK_ION_ELEMENTS = {
     "NA": "Na",
     "NA+": "Na",
     "SOD": "Na",
@@ -233,6 +151,15 @@ ION_ELEMENTS = {
     "IOD": "I",
     "I": "I",
     "F": "F",
+}
+
+#: Monatomic salt ions: group-1 cations and group-17 anions, plus the CHARMM and
+#: Amber aliases. They come from the buffer or from neutralizing the box, occupy
+#: no defined site, coordinate nothing directionally, and get re-added by
+#: ``Modeller.addSolvent`` anyway - so the cleaner removes them by default.
+BULK_ION_RESIDUES = frozenset(_BULK_ION_ELEMENTS)
+
+_STRUCTURAL_METAL_ELEMENTS = {
     "CA": "Ca",
     "CAL": "Ca",
     "MG": "Mg",
@@ -270,6 +197,19 @@ ION_ELEMENTS = {
     "LA": "La",
     "CE": "Ce",
 }
+
+#: Metals that are frequently structural or catalytic: buried, directionally
+#: coordinated, often required for the fold or the chemistry (trypsin's Ca2+,
+#: PDB 3PTB residue CA 480). Kept by default and reported in
+#: ``CleaningResult.retained``, because deleting a needed metal is silent and
+#: wrong while keeping an unwanted one is visible and reversible. The phasing
+#: heavy atoms (Hg, Pt, Au, Pb, lanthanides) sit here for the same reason.
+STRUCTURAL_METAL_RESIDUES = frozenset(_STRUCTURAL_METAL_ELEMENTS)
+
+#: Ion residue name -> element symbol. Every name in :data:`BULK_ION_RESIDUES`
+#: and :data:`STRUCTURAL_METAL_RESIDUES` appears here, so an ion is never deleted
+#: on its name alone: its single atom must carry the matching element too.
+ION_ELEMENTS = _BULK_ION_ELEMENTS | _STRUCTURAL_METAL_ELEMENTS
 
 #: Cryoprotectants and polyols.
 _CRYOPROTECTANTS = frozenset(

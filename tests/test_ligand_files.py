@@ -16,6 +16,7 @@ pytest.importorskip("openmm")
 pytest.importorskip("parmed")
 
 from openmm import app
+from rdkit import Chem
 
 from forcefill.ligand_files import (
     LigandFileInfo,
@@ -28,7 +29,7 @@ from forcefill.ligand_files import (
     smiles_with_residue_geometry,
     split_multi_sdf,
 )
-from tests.helpers import DATA, write_methanol_pdb, write_methanol_sdf
+from tests.helpers import DATA, methanol_residue, write_methanol_pdb, write_methanol_sdf
 
 EXAMPLES = Path(__file__).parent.parent / "examples" / "data"
 
@@ -41,6 +42,21 @@ BENZAMIDINIUM = EXAMPLES / "benzamidinium.sdf"
 #: what runs whenever RDKit cannot parse the file, so they are tested on every
 #: format RDKit is.
 BOTH_READERS = pytest.mark.parametrize("prefer_rdkit", [True, False], ids=["rdkit", "text"])
+
+
+@pytest.fixture(params=[False, True], ids=["v2000", "v3000"])
+def charged_sdf_records(request: pytest.FixtureRequest) -> tuple[str, str]:
+    """Ammonium and chloride records with distinct, explicitly stated chemistry."""
+    records = []
+    for name, smiles in (("FIRST", "[NH4+]"), ("SECOND", "[Cl-]")):
+        molecule = Chem.AddHs(Chem.MolFromSmiles(smiles))
+        molecule.SetProp("_Name", name)
+        conformer = Chem.Conformer(molecule.GetNumAtoms())
+        for i in range(molecule.GetNumAtoms()):
+            conformer.SetAtomPosition(i, (float(i), i + 0.25, float(-i)))
+        molecule.AddConformer(conformer)
+        records.append(Chem.MolToMolBlock(molecule, forceV3000=request.param))
+    return records[0], records[1]
 
 
 # --------------------------------------------------------------------------
@@ -74,6 +90,104 @@ def test_reads_the_charged_example_ligand(prefer_rdkit: bool) -> None:
     assert info.formula == "C7H9N2"
     assert info.n_atoms == 18
     assert info.formal_charge == 1
+
+
+@BOTH_READERS
+@pytest.mark.parametrize("ending", ["$$$$\n", ""], ids=["terminated", "unterminated"])
+def test_sdf_inspects_only_the_first_molecule(
+    tmp_path: Path, prefer_rdkit: bool, ending: str, charged_sdf_records: tuple[str, str]
+) -> None:
+    first, second = charged_sdf_records
+    source = tmp_path / "multi.sdf"
+    source.write_text(first + "$$$$\n" + second + ending)
+
+    info = inspect_ligand_file(source, prefer_rdkit=prefer_rdkit)
+
+    assert info.elements == {"N": 1, "H": 4}
+    assert info.formal_charge == 1
+    assert info.n_bonds == 4
+    assert info.positions == [
+        (0.0, 0.25, 0.0),
+        (1.0, 1.25, -1.0),
+        (2.0, 2.25, -2.0),
+        (3.0, 3.25, -3.0),
+        (4.0, 4.25, -4.0),
+    ]
+
+
+@BOTH_READERS
+def test_sdf_does_not_skip_a_malformed_first_molecule(
+    tmp_path: Path, prefer_rdkit: bool, charged_sdf_records: tuple[str, str]
+) -> None:
+    source = tmp_path / "malformed-first.sdf"
+    source.write_text("bad\n  test\n\nnot a counts line\n$$$$\n" + charged_sdf_records[1] + "$$$$\n")
+
+    with pytest.raises(ValueError, match="counts line"):
+        inspect_ligand_file(source, prefer_rdkit=prefer_rdkit)
+
+
+@BOTH_READERS
+def test_sdf_fallback_inspects_the_same_first_molecule(
+    tmp_path: Path, prefer_rdkit: bool, charged_sdf_records: tuple[str, str]
+) -> None:
+    first, second = charged_sdf_records
+    # Neutral N with four bonds fails RDKit sanitization. The text reader can
+    # still inspect it; selecting the valid chloride instead changes molecules.
+    first = first.replace("M  CHG  1   1   1\n", "").replace(" CHG=1", "")
+    source = tmp_path / "fallback.sdf"
+    source.write_text(first + "$$$$\n" + second + "$$$$\n")
+
+    info = inspect_ligand_file(source, prefer_rdkit=prefer_rdkit)
+
+    assert info.source == "text"
+    assert info.elements == {"N": 1, "H": 4}
+    assert info.formal_charge == 0
+    assert info.n_bonds == 4
+    assert len(info.positions) == 5
+
+
+@BOTH_READERS
+def test_sdf_preserves_a_blank_first_title(
+    tmp_path: Path, prefer_rdkit: bool, charged_sdf_records: tuple[str, str]
+) -> None:
+    first, second = charged_sdf_records
+    source = tmp_path / "blank-title.sdf"
+    source.write_text("\n" + first.split("\n", 1)[1] + "$$$$\n" + second + "$$$$\n")
+
+    info = inspect_ligand_file(source, prefer_rdkit=prefer_rdkit)
+
+    assert info.elements == {"N": 1, "H": 4}
+    assert info.formal_charge == 1
+
+
+@BOTH_READERS
+def test_sdf_ignores_empty_delimited_records(
+    tmp_path: Path, prefer_rdkit: bool, charged_sdf_records: tuple[str, str]
+) -> None:
+    first, second = charged_sdf_records
+    source = tmp_path / "empty-records.sdf"
+    source.write_text("\n\n$$$$\n" + first + "$$$$\n\n$$$$\n" + second + "$$$$\n")
+
+    info = inspect_ligand_file(source, prefer_rdkit=prefer_rdkit)
+
+    assert info.elements == {"N": 1, "H": 4}
+    assert info.formal_charge == 1
+
+
+@BOTH_READERS
+@pytest.mark.parametrize("suffix", [".mol", ".sd", ".sdf"])
+def test_single_molecule_needs_no_sdf_terminator(
+    tmp_path: Path, prefer_rdkit: bool, suffix: str, charged_sdf_records: tuple[str, str]
+) -> None:
+    source = tmp_path / f"single{suffix}"
+    source.write_text(charged_sdf_records[0])
+
+    info = inspect_ligand_file(source, prefer_rdkit=prefer_rdkit)
+
+    assert info.elements == {"N": 1, "H": 4}
+    assert info.formal_charge == 1
+    assert info.n_bonds == 4
+    assert len(info.positions) == 5
 
 
 @BOTH_READERS
@@ -111,7 +225,8 @@ def test_reads_sdf_v3000(tmp_path: Path) -> None:
     assert info.formal_charge == -1
 
 
-def test_v2000_legacy_charge_codes(tmp_path: Path) -> None:
+@BOTH_READERS
+def test_v2000_legacy_charge_codes(tmp_path: Path, prefer_rdkit: bool) -> None:
     # Pre-M-CHG files put the charge in atom-block column 37-39, where code 3 is +1.
     sdf = tmp_path / "legacy.sdf"
     sdf.write_text(
@@ -120,7 +235,12 @@ def test_v2000_legacy_charge_codes(tmp_path: Path) -> None:
         "    0.0000    0.0000    0.0000 N   0  3  0  0  0  0  0  0  0  0  0  0\n"
         "M  END\n"
     )
-    assert inspect_ligand_file(sdf, prefer_rdkit=False).formal_charge == 1
+    assert inspect_ligand_file(sdf, prefer_rdkit=prefer_rdkit).formal_charge == 1
+    # A later M CHG must neither override the first record's legacy field nor
+    # add its charge to the first molecule.
+    chloride = Chem.MolToMolBlock(Chem.MolFromSmiles("[Cl-]"))
+    sdf.write_text(sdf.read_text() + "$$$$\n" + chloride + "$$$$\n")
+    assert inspect_ligand_file(sdf, prefer_rdkit=prefer_rdkit).formal_charge == 1
 
 
 def test_unknown_suffix_is_rejected(tmp_path: Path) -> None:
@@ -147,26 +267,22 @@ def test_malformed_sdf_is_rejected(tmp_path: Path) -> None:
 # --------------------------------------------------------------------------
 
 
-def _methanol_residue(tmp_path: Path) -> app.topology.Residue:
-    return next(app.PDBFile(str(write_methanol_pdb(tmp_path / "in.pdb"))).topology.residues())
+def test_matching_file_passes() -> None:
+    check_matches_residue(inspect_ligand_file(DATA / "methanol.mol2"), methanol_residue(), "LIG")
 
 
-def test_matching_file_passes(tmp_path: Path) -> None:
-    check_matches_residue(inspect_ligand_file(DATA / "methanol.mol2"), _methanol_residue(tmp_path), "LIG")
-
-
-def test_mismatched_file_names_the_difference(tmp_path: Path) -> None:
+def test_mismatched_file_names_the_difference() -> None:
     with pytest.raises(ValueError) as exc:
-        check_matches_residue(inspect_ligand_file(BENZAMIDINIUM), _methanol_residue(tmp_path), "LIG")
+        check_matches_residue(inspect_ligand_file(BENZAMIDINIUM), methanol_residue(), "LIG")
     message = str(exc.value)
     assert "C7H9N2" in message
     assert "CH4O" in message
     assert "C: file 7 vs PDB 1" in message
 
 
-def test_mismatch_can_be_downgraded_to_a_warning(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+def test_mismatch_can_be_downgraded_to_a_warning(caplog: pytest.LogCaptureFixture) -> None:
     with caplog.at_level("WARNING"):
-        check_matches_residue(inspect_ligand_file(BENZAMIDINIUM), _methanol_residue(tmp_path), "LIG", strict=False)
+        check_matches_residue(inspect_ligand_file(BENZAMIDINIUM), methanol_residue(), "LIG", strict=False)
     assert "not the same molecule" in caplog.text
 
 

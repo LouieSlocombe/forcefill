@@ -35,13 +35,12 @@ Three things about that generator shape this module:
 from __future__ import annotations
 
 import logging
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 from openmmforcefields.generators import EspalomaTemplateGenerator
 
-from ._spec import PathLike, ResolvedSpec
-from .smirnoff import _load_molecule, _rename_residue_template
+from ._spec import PathLike, ResolvedSpec, check_choice
+from .smirnoff import _load_molecule, _write_residue_template
 from .smirnoff import ligand_topology as _smirnoff_ligand_topology
 
 if TYPE_CHECKING:
@@ -150,10 +149,7 @@ def espaloma_residue_ffxml(
             an explicit ``net_charge``, or *charge_method* is not one espaloma
             knows.
     """
-    if charge_method not in ESPALOMA_CHARGE_METHODS:
-        raise ValueError(
-            f"charge_method={charge_method!r} is not one espaloma accepts; choose from {list(ESPALOMA_CHARGE_METHODS)}."
-        )
+    check_choice(charge_method, ESPALOMA_CHARGE_METHODS, "espaloma charge_method")
     require_espaloma()
     model = _model(spec.forcefield)
     molecule = _load_molecule(spec)
@@ -169,10 +165,6 @@ def espaloma_residue_ffxml(
         forcefield=model,
         template_generator_kwargs={"charge_method": charge_method},
     )
-    ffxml = _rename_residue_template(generator.generate_residue_template(molecule), spec.name)
-
-    output_xml = Path(output_xml)
-    output_xml.parent.mkdir(parents=True, exist_ok=True)
-    output_xml.write_text(ffxml)
-    log.info("Wrote per-residue XML: %s", output_xml)
-    return str(output_xml)
+    path = _write_residue_template(generator.generate_residue_template(molecule), spec.name, output_xml)
+    log.info("Wrote per-residue XML: %s", path)
+    return path

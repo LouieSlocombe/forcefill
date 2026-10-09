@@ -24,6 +24,44 @@ executables), `smirnoff` (real OpenFF parameterization) and `espaloma` (the real
 Espaloma model, which needs the optional `espaloma` package and downloads a model
 on first use). CI runs all of them and enforces a coverage floor.
 
+## Sharing implementations
+
+Share test-input construction through `tests/helpers.py` and the synthetic
+OFFXML writer in `examples/bespoke_fixture.py`. Keep the CHARMM reference XML,
+its fixed-geometry energy calculation, virtual-site reference XML and explicit
+SDF fixtures independent of production conversion code: they are scientific
+checks on that code, not alternative implementations to replace.
+
+The backend preparation and output routines in `forcefill/_pipeline.py` and
+`forcefill/smirnoff.py` are shared, but the entry points retain their distinct
+structure and standalone checks. Likewise, cleaner and parameterizer share
+external-bond counts without sharing their removal/skip decisions. Keep
+format-specific readers, charge-inference rules, geometry-preserving conversion
+and conformer generation separate where their inputs and chemistry differ.
+
+Two candidates from the consolidation review remain deferred:
+
+- **1-4 scale agreement.** Custom ligand scales currently must agree exactly
+  with each other and any stock-scaled ligand in the build. Base compatibility
+  and XML merging use the shared absolute tolerance of `1e-5`. Relaxing the
+  first rule needs a policy for load order: with Coulomb scales `0.5`,
+  `0.500009`, `0.500018` and identical LJ scales, adjacent values agree within
+  tolerance but the endpoints do not. OpenMM compares later declarations with
+  the first one, including the base force field when present. Before changing
+  this gate, test both scale components, tolerance boundaries, input
+  permutations, GAFF-first merging, and base-present/base-absent loading against
+  actual merged XML and OpenMM. A tolerant grouping alone is insufficient.
+- **RDKit-to-OpenMM example conversion.** The preparation example preserves PDB
+  names and returns nanometers; the CHARMM example uses stream-template names,
+  checks atom/name counts and returns angstroms. Retain both small examples
+  until a shared conversion has a clear naming, ordering and unit contract.
+
+Small version-metadata fallbacks and changelog-heading checks remain local.
+The pip, conda and mocked documentation environments have different purposes;
+keep their declarations distinct and keep the Ruff pins synchronized. Repeated
+OpenFF loading or labeling already calls shared implementations; profile it
+before adding caches or carrying mutable molecules through the pipeline.
+
 ## Style
 
 `ruff` owns both layout and lint, and gates CI:

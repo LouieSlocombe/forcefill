@@ -260,10 +260,7 @@ def build_ligand_xml(
             )
     log.info("Ligands to parameterize: %s", sorted(specs))
 
-    gaff_dat = _pipeline.prepare_gaff_backend(specs, atom_type)
-    smirnoff_profiles = _pipeline.prepare_smirnoff_backend(specs)
-    _pipeline.prepare_espaloma_backend(specs)
-    _pipeline.check_backends_match_base(specs, base_forcefield, smirnoff_profiles)
+    gaff_dat, smirnoff_profiles = _pipeline.prepare_backends(specs, atom_type, base_forcefield)
 
     minimizations: dict[str, MinimizationResult] = {}
     with _pipeline.working_directory(workdir, output_xml, prefix="ligand_ff_", cleanup=cleanup) as wd:

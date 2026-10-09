@@ -429,6 +429,15 @@ def _rename_residue_template(ffxml: str, name: str) -> str:
     return ET.tostring(root, encoding="unicode")
 
 
+def _write_residue_template(ffxml: str, name: str, output_xml: PathLike) -> str:
+    """Name and write the single-residue XML produced by an OpenMM template generator."""
+    ffxml = _rename_residue_template(ffxml, name)
+    output_xml = Path(output_xml)
+    output_xml.parent.mkdir(parents=True, exist_ok=True)
+    output_xml.write_text(ffxml)
+    return str(output_xml)
+
+
 def ligand_topology(spec: ResolvedSpec) -> tuple[app.Topology, unit.Quantity]:
     """Return ``(topology, positions)`` for the spec's molecule, for validating it on its own.
 
@@ -471,10 +480,6 @@ def smirnoff_residue_ffxml(spec: ResolvedSpec, output_xml: PathLike) -> str:
         ", ".join(spec.forcefield),
     )
     generator = SMIRNOFFTemplateGenerator(molecules=[molecule], forcefield=list(spec.forcefield))
-    ffxml = _rename_residue_template(generator.generate_residue_template(molecule), spec.name)
-
-    output_xml = Path(output_xml)
-    output_xml.parent.mkdir(parents=True, exist_ok=True)
-    output_xml.write_text(ffxml)
-    log.info("Wrote per-residue XML: %s", output_xml)
-    return str(output_xml)
+    path = _write_residue_template(generator.generate_residue_template(molecule), spec.name, output_xml)
+    log.info("Wrote per-residue XML: %s", path)
+    return path

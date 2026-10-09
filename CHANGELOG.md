@@ -8,6 +8,26 @@ of it requires a major bump.
 
 ## [Unreleased]
 
+## [1.1.1] - 2026-10-09
+
+### Fixed
+
+- Ligand-file inspection consistently reads the first nonempty SDF record.
+  Later V2000 charge records and V3000 atom/bond blocks no longer contaminate
+  its composition or charge. If RDKit cannot read the first molecule, the
+  fallback inspects that record instead of silently selecting a later molecule.
+
+### Changed
+
+- Consolidated ion alias definitions, external residue bond counts, backend
+  preparation, GAFF assembly and generated-template writing while retaining
+  backend-specific chemistry and validation policies.
+- Shared synthetic ligand/bespoke fixtures and installed-wheel checks across
+  their callers. Independent scientific reference XML and energy checks remain
+  separate.
+- Espaloma charge-method errors use the shared option validator and identify
+  the backend and accepted choices.
+
 ## [1.1.0] - 2026-10-07
 
 ### Changed
@@ -91,6 +111,7 @@ First release. The API below is now covered by the compatibility promise above.
 - Re-running into an existing working directory repeats finished `antechamber`
   jobs; nothing is cached between runs.
 
-[Unreleased]: https://github.com/LouieSlocombe/forcefill/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/LouieSlocombe/forcefill/compare/v1.1.1...HEAD
+[1.1.1]: https://github.com/LouieSlocombe/forcefill/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/LouieSlocombe/forcefill/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/LouieSlocombe/forcefill/releases/tag/v1.0.0

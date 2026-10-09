@@ -36,51 +36,18 @@ import logging
 import shutil
 from pathlib import Path
 
-from openff.toolkit import ForceField, Molecule
-from openff.units import unit
 from openmm import app
 
 from forcefill import LigandSpec, build_ligand_xml
 
+if __package__:
+    from .bespoke_fixture import fake_bespoke_offxml
+else:  # Direct execution: python examples/parameterize_ligand_bespoke.py
+    from bespoke_fixture import fake_bespoke_offxml
+
 HERE = Path(__file__).parent
 BEN_SDF = HERE / "data" / "benzamidinium.sdf"
 WORKDIR = HERE / "bespoke_work"
-
-#: The unconstrained build, which is what BespokeFit itself starts from. The
-#: constrained one is used below to show why.
-RELEASE = "openff_unconstrained-2.2.1.offxml"
-
-
-def fake_bespoke_offxml(path: Path, smiles: str, release: str = RELEASE) -> Path:
-    """Write an OFFXML shaped like BespokeFit's: a release plus one bespoke torsion."""
-    forcefield = ForceField(release)
-    molecule = Molecule.from_smiles(smiles, allow_undefined_stereo=True)
-    bond = next(
-        b
-        for b in molecule.bonds
-        if any(n is not b.atom2 for n in b.atom1.bonded_atoms) and any(n is not b.atom1 for n in b.atom2.bonded_atoms)
-    )
-    atoms = [
-        next(n for n in bond.atom1.bonded_atoms if n is not bond.atom2),
-        bond.atom1,
-        bond.atom2,
-        next(n for n in bond.atom2.bonded_atoms if n is not bond.atom1),
-    ]
-    # Every atom decorated with element and connectivity: stock Sage torsions
-    # wildcard the outer two, so nothing in the release is written this way.
-    smirks = "~".join(f"[#{a.atomic_number}X{len(list(a.bonded_atoms))}:{i + 1}]" for i, a in enumerate(atoms))
-    forcefield.get_parameter_handler("ProperTorsions").add_parameter(
-        {
-            "smirks": smirks,
-            "periodicity1": 1,
-            "phase1": 0.0 * unit.degree,
-            "k1": 1.234 * unit.kilocalorie_per_mole,
-            "idivf1": 1.0,
-        }
-    )
-    forcefield.to_file(str(path))
-    print(f"  wrote {path.name}: {release} + 1 bespoke torsion {smirks}")
-    return path
 
 
 def expect_refusal(label: str, **kwargs: object) -> None:

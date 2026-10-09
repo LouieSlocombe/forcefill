@@ -48,7 +48,7 @@ from __future__ import annotations
 
 import logging
 from collections import defaultdict
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -63,6 +63,7 @@ from ._residue_names import (
     WATER_RESIDUES,
 )
 from ._spec import PathLike
+from .topology import _external_bond_counts
 
 log = logging.getLogger(__name__)
 
@@ -118,21 +119,6 @@ class CleaningResult:
 # --------------------------------------------------------------------------
 
 
-def _linked_residues(topology: app.Topology) -> set[int]:
-    """Indices of residues with at least one bond to a *different* residue.
-
-    One pass over the bonds. ``Residue.external_bonds()`` re-scans every bond per
-    residue, which is quadratic in the residue count - 250x slower than this on a
-    287-residue structure, and far worse on a solvated box.
-    """
-    linked: set[int] = set()
-    for atom1, atom2 in topology.bonds():
-        if atom1.residue is not atom2.residue:
-            linked.add(atom1.residue.index)
-            linked.add(atom2.residue.index)
-    return linked
-
-
 def _ion_mismatch(residue: app.topology.Residue, name: str, n_atoms: int) -> str | None:
     """Why *residue* cannot be treated as the ion its name claims, or None if it can.
 
@@ -167,7 +153,7 @@ def _classify_residue(
     residue: app.topology.Residue,
     name: str,
     *,
-    linked: set[int],
+    external_bonds: Mapping[app.topology.Residue, int],
     remove_water: bool,
     remove_ions: bool,
     remove_additives: bool,
@@ -201,8 +187,7 @@ def _classify_residue(
 
     # Checked before every removal rule: Modeller drops the bonds along with
     # the atoms, silently leaving the partner with an unsatisfied valence.
-    if residue.index in linked:
-        n_linked = sum(1 for _ in residue.external_bonds())
+    if n_linked := external_bonds.get(residue, 0):
         return None, (
             f"covalently bonded to {n_linked} neighbouring atom(s) - deleting "
             "it would leave the partner with an unsatisfied valence and no "
@@ -301,7 +286,7 @@ def clean_topology(
         log.info("Nothing enabled for removal; returning the structure unchanged.")
         return topology, positions, CleaningResult(n_atoms_before, n_atoms_before)
 
-    linked = _linked_residues(topology)
+    external_bonds = _external_bond_counts(topology)
     to_delete: list[app.topology.Residue] = []
     counts: dict[str, int] = defaultdict(int)
     categories: dict[str, str] = {}
@@ -315,7 +300,7 @@ def clean_topology(
         category, reason = _classify_residue(
             residue,
             name,
-            linked=linked,
+            external_bonds=external_bonds,
             remove_water=remove_water,
             remove_ions=remove_ions,
             remove_additives=remove_additives,

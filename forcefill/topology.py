@@ -55,6 +55,22 @@ def find_nonstandard_residues(
     return forcefield.getUnmatchedResidues(topology)
 
 
+def _external_bond_counts(topology: app.Topology) -> dict[app.topology.Residue, int]:
+    """Count each residue's bonds to other residues in one pass over the topology.
+
+    Keys are residue objects, so counts from different topologies can be combined
+    without confusing residues that have the same name or index. Unlinked
+    residues are absent. Unlike ``Residue.external_bonds()``, this does not
+    rescan all bonds for each residue.
+    """
+    counts: dict[app.topology.Residue, int] = defaultdict(int)
+    for atom1, atom2 in topology.bonds():
+        if atom1.residue is not atom2.residue:
+            counts[atom1.residue] += 1
+            counts[atom2.residue] += 1
+    return counts
+
+
 def _classify_unmatched(
     unmatched: Sequence[app.topology.Residue],
 ) -> tuple[dict[str, app.topology.Residue], dict[str, str]]:
@@ -65,6 +81,10 @@ def _classify_unmatched(
     groups: dict[str, list[app.topology.Residue]] = defaultdict(list)
     for res in unmatched:
         groups[res.name.strip()].append(res)
+
+    external_bonds: dict[app.topology.Residue, int] = {}
+    for topology in {res.chain.topology for res in unmatched}:
+        external_bonds.update(_external_bond_counts(topology))
 
     to_param: dict[str, app.topology.Residue] = {}
     skipped: dict[str, str] = {}
@@ -99,7 +119,7 @@ def _classify_unmatched(
                 "in the bundled water file rather than adding to them, so they "
                 "collide with amber14-all.xml"
             )
-        elif n_linked := sum(1 for r in residues if any(True for _ in r.external_bonds())):
+        elif n_linked := sum(1 for r in residues if r in external_bonds):
             skipped[name] = (
                 f"covalently bonded to neighbouring residues ({n_linked} of "
                 f"{len(residues)} copies) - a stand-alone GAFF "

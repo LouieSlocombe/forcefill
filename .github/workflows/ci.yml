@@ -78,13 +78,8 @@ jobs:
         with:
           environment-file: environment.yml
           cache-environment: true
-      - run: python -m build
-      - name: Install the built wheel and import it
-        run: |
-          pip install --force-reinstall --no-deps dist/*.whl
-          cd "$(mktemp -d)"  # import from outside the source tree
-          python -c "import forcefill; print(forcefill.__version__)"
-          python -c "import importlib.resources as r; assert r.files('forcefill').joinpath('py.typed').is_file()"
+      - name: Build and check the installed wheel
+        run: bash .github/build_and_check_wheel.sh
 
   # Mirrors the Read the Docs build (.readthedocs.yaml): pip only, the package
   # installed --no-deps, and parmed/rdkit/openff/openmmforcefields mocked in
