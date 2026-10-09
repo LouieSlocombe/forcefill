@@ -284,10 +284,7 @@ def build_forcefield_xml(
 
     # Fail early if the tools a backend needs are absent, or if the base force
     # field is one its output could never be loaded with.
-    gaff_dat = _pipeline.prepare_gaff_backend(specs, atom_type)
-    smirnoff_profiles = _pipeline.prepare_smirnoff_backend(specs)
-    _pipeline.prepare_espaloma_backend(specs)
-    _pipeline.check_backends_match_base(specs, base_forcefield, smirnoff_profiles)
+    gaff_dat, smirnoff_profiles = _pipeline.prepare_backends(specs, atom_type, base_forcefield)
 
     minimizations: dict[str, MinimizationResult] = {}
     full_minimization: MinimizationResult | None = None

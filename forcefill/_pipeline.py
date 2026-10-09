@@ -170,6 +170,17 @@ def prepare_espaloma_backend(specs: Mapping[str, ResolvedSpec]) -> None:
     log.info("Using Espaloma model(s): %s", ", ".join(models))
 
 
+def prepare_backends(
+    specs: Mapping[str, ResolvedSpec], atom_type: str, base_forcefield: Sequence[str]
+) -> tuple[str | None, dict[tuple[str, ...], SmirnoffProfile]]:
+    """Check selected backends and their compatibility before creating a workdir."""
+    gaff_dat = prepare_gaff_backend(specs, atom_type)
+    smirnoff_profiles = prepare_smirnoff_backend(specs)
+    prepare_espaloma_backend(specs)
+    check_backends_match_base(specs, base_forcefield, smirnoff_profiles)
+    return gaff_dat, smirnoff_profiles
+
+
 def check_backends_match_base(
     specs: Mapping[str, ResolvedSpec],
     base_forcefield: Sequence[str],
@@ -389,26 +400,20 @@ def combine_residue_xmls(
     merged as finished XML instead - gaff, smirnoff, espaloma and charmm share
     nothing upstream of that.
     """
-    gaff = {name for name, spec in specs.items() if spec.backend == "gaff"}
-    other_names = sorted(set(specs) - gaff)
-    if not other_names:
-        return amber.assemble_openmm_ffxml(
-            {name: artifacts[name].mol2 for name in sorted(gaff)},
-            [gaff_dat, *(artifacts[name].frcmod for name in sorted(gaff))],
-            output_xml,
-        )
-
+    gaff = sorted(name for name, spec in specs.items() if spec.backend == "gaff")
+    other_names = sorted(set(specs) - set(gaff))
     to_merge: list[PathLike] = []
-    if gaff:
+    if gaff or not other_names:
         # One ParmEd document for all the GAFF residues, so their shared atom
-        # types are written once, then merged with the SMIRNOFF ones.
-        to_merge.append(
-            amber.assemble_openmm_ffxml(
-                {name: artifacts[name].mol2 for name in sorted(gaff)},
-                [gaff_dat, *(artifacts[name].frcmod for name in sorted(gaff))],
-                workdir / "_gaff_combined.xml",
-            )
+        # types are written once, then merged with any other backend's output.
+        gaff_xml = amber.assemble_openmm_ffxml(
+            {name: artifacts[name].mol2 for name in gaff},
+            [gaff_dat, *(artifacts[name].frcmod for name in gaff)],
+            workdir / "_gaff_combined.xml" if other_names else output_xml,
         )
+        if not other_names:
+            return gaff_xml
+        to_merge.append(gaff_xml)
     to_merge += [artifacts[name].xml for name in other_names]
     return merge_ffxml(to_merge, output_xml)
 

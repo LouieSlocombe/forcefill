@@ -48,7 +48,7 @@ def test_installed_models_are_reported() -> None:
 def test_an_unknown_charge_method_is_refused_before_espaloma_is_needed() -> None:
     # Checked ahead of require_espaloma, so the message is about the typo rather
     # than about a missing optional dependency.
-    with pytest.raises(ValueError, match="not one espaloma accepts"):
+    with pytest.raises(ValueError, match="espaloma charge_method='am1bcc' is not one of"):
         espaloma_backend.espaloma_residue_ffxml(
             ResolvedSpec(name="LIG", smiles="CO", backend="espaloma", forcefield=DEFAULT_ESPALOMA_FORCEFIELD),
             "unused.xml",
