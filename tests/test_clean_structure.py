@@ -93,6 +93,56 @@ def test_every_ion_code_maps_to_a_real_element() -> None:
         assert element.get_by_symbol(symbol) is not None, name
 
 
+def test_ion_aliases_keep_their_categories_and_elements() -> None:
+    # Independent expected values: deriving categories from the element maps
+    # must not make the coverage test above pass for a changed classification.
+    bulk = {
+        "Na": "NA NA+ SOD",
+        "K": "K K+ POT",
+        "Li": "LI LI+ LIT",
+        "Rb": "RB RB+ RUB",
+        "Cs": "CS CS+ CES",
+        "Cl": "CL CL- CLA",
+        "Br": "BR BR-",
+        "I": "IOD I",
+        "F": "F",
+    }
+    structural = {
+        "Ca": "CA CAL",
+        "Mg": "MG",
+        "Zn": "ZN ZN2",
+        "Mn": "MN MN3",
+        "Fe": "FE FE2",
+        "Cu": "CU CU1",
+        "Ni": "NI NI2",
+        "Co": "CO 3CO",
+        "Cd": "CD CD2",
+        "Hg": "HG",
+        "Pb": "PB",
+        "Pt": "PT",
+        "Au": "AU",
+        "Ag": "AG",
+        "Sr": "SR",
+        "Ba": "BA BAR",
+        "Mo": "MO",
+        "W": "W",
+        "V": "V",
+        "Cr": "CR",
+        "Sm": "SM",
+        "Eu": "EU",
+        "Gd": "GD",
+        "Yb": "YB",
+        "Tb": "TB",
+        "La": "LA",
+        "Ce": "CE",
+    }
+    for expected, actual in ((bulk, BULK_ION_RESIDUES), (structural, STRUCTURAL_METAL_RESIDUES)):
+        aliases = {alias: symbol for symbol, names in expected.items() for alias in names.split()}
+        assert isinstance(actual, frozenset)
+        assert actual == aliases.keys()
+        assert {alias: ION_ELEMENTS[alias] for alias in actual} == aliases
+
+
 # -- clean_topology --------------------------------------------------------
 
 
