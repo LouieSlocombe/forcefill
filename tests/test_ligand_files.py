@@ -28,7 +28,7 @@ from forcefill.ligand_files import (
     smiles_with_residue_geometry,
     split_multi_sdf,
 )
-from tests.helpers import DATA, write_methanol_pdb, write_methanol_sdf
+from tests.helpers import DATA, methanol_residue, write_methanol_pdb, write_methanol_sdf
 
 EXAMPLES = Path(__file__).parent.parent / "examples" / "data"
 
@@ -147,26 +147,22 @@ def test_malformed_sdf_is_rejected(tmp_path: Path) -> None:
 # --------------------------------------------------------------------------
 
 
-def _methanol_residue(tmp_path: Path) -> app.topology.Residue:
-    return next(app.PDBFile(str(write_methanol_pdb(tmp_path / "in.pdb"))).topology.residues())
+def test_matching_file_passes() -> None:
+    check_matches_residue(inspect_ligand_file(DATA / "methanol.mol2"), methanol_residue(), "LIG")
 
 
-def test_matching_file_passes(tmp_path: Path) -> None:
-    check_matches_residue(inspect_ligand_file(DATA / "methanol.mol2"), _methanol_residue(tmp_path), "LIG")
-
-
-def test_mismatched_file_names_the_difference(tmp_path: Path) -> None:
+def test_mismatched_file_names_the_difference() -> None:
     with pytest.raises(ValueError) as exc:
-        check_matches_residue(inspect_ligand_file(BENZAMIDINIUM), _methanol_residue(tmp_path), "LIG")
+        check_matches_residue(inspect_ligand_file(BENZAMIDINIUM), methanol_residue(), "LIG")
     message = str(exc.value)
     assert "C7H9N2" in message
     assert "CH4O" in message
     assert "C: file 7 vs PDB 1" in message
 
 
-def test_mismatch_can_be_downgraded_to_a_warning(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+def test_mismatch_can_be_downgraded_to_a_warning(caplog: pytest.LogCaptureFixture) -> None:
     with caplog.at_level("WARNING"):
-        check_matches_residue(inspect_ligand_file(BENZAMIDINIUM), _methanol_residue(tmp_path), "LIG", strict=False)
+        check_matches_residue(inspect_ligand_file(BENZAMIDINIUM), methanol_residue(), "LIG", strict=False)
     assert "not the same molecule" in caplog.text
 
 

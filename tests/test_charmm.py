@@ -44,6 +44,7 @@ from tests.helpers import (
     METHANOL_ATOMS,
     METHANOL_BONDS,
     METHANOL_XYZ,
+    add_named_atoms_and_bonds,
     write_chloroethanol_pdb,
     write_methanol_pdb,
 )
@@ -132,9 +133,7 @@ def methanol_pair(name: str = "LIG", separation: float = 8.0) -> tuple[app.Topol
     xyz = []
     for copy in range(2):
         residue = top.addResidue(name, chain)
-        atoms = {n: top.addAtom(n, element, residue) for n, element in METHANOL_ATOMS}
-        for a, b in METHANOL_BONDS:
-            top.addBond(atoms[a], atoms[b])
+        add_named_atoms_and_bonds(residue, METHANOL_ATOMS, METHANOL_BONDS)
         xyz += [(x + copy * separation, y, z) for x, y, z in METHANOL_XYZ]
     return top, unit.Quantity([openmm.Vec3(*p) for p in xyz], unit.angstrom)
 

@@ -33,15 +33,23 @@ METHANOL_ATOMS = [
 METHANOL_BONDS = [("C1", "O1"), ("C1", "H1"), ("C1", "H2"), ("C1", "H3"), ("O1", "H4")]
 
 
+def add_named_atoms_and_bonds(
+    residue: app.topology.Residue,
+    atoms: Sequence[tuple[str, app.Element]],
+    bonds: Sequence[tuple[str, str]],
+) -> None:
+    """Populate an existing residue from ordered atom and named-bond tables."""
+    top = residue.chain.topology
+    by_name = {name: top.addAtom(name, elem, residue) for name, elem in atoms}
+    for a, b in bonds:
+        top.addBond(by_name[a], by_name[b])
+
+
 def add_methanol_residue(top: app.Topology, chain_id: str = "A", name: str = "LIG") -> list[tuple[float, float, float]]:
     """Append a methanol residue to *top*; returns its coordinate list (angstrom tuples)."""
     chain = top.addChain(chain_id)
     res = top.addResidue(name, chain)
-    atoms: dict[str, app.topology.Atom] = {}
-    for atom_name, elem in METHANOL_ATOMS:
-        atoms[atom_name] = top.addAtom(atom_name, elem, res)
-    for a, b in METHANOL_BONDS:
-        top.addBond(atoms[a], atoms[b])
+    add_named_atoms_and_bonds(res, METHANOL_ATOMS, METHANOL_BONDS)
     return list(METHANOL_XYZ)
 
 
@@ -104,11 +112,7 @@ def add_chloroethanol_residue(
     """Append a 2-chloroethanol residue to *top*; returns its coordinate list (angstrom tuples)."""
     chain = top.addChain(chain_id)
     res = top.addResidue(name, chain)
-    atoms: dict[str, app.topology.Atom] = {}
-    for atom_name, elem in CHLOROETHANOL_ATOMS:
-        atoms[atom_name] = top.addAtom(atom_name, elem, res)
-    for a, b in CHLOROETHANOL_BONDS:
-        top.addBond(atoms[a], atoms[b])
+    add_named_atoms_and_bonds(res, CHLOROETHANOL_ATOMS, CHLOROETHANOL_BONDS)
     dx, dy, dz = origin
     return [(x + dx, y + dy, z + dz) for x, y, z in CHLOROETHANOL_XYZ]
 
@@ -207,11 +211,7 @@ def add_glycerol_residue(
     """Append a glycerol (heavy atoms only, as X-ray additives come); returns its coordinates."""
     chain = top.addChain(chain_id)
     res = top.addResidue(name, chain)
-    atoms: dict[str, app.topology.Atom] = {}
-    for atom_name, elem in GLYCEROL_ATOMS:
-        atoms[atom_name] = top.addAtom(atom_name, elem, res)
-    for a, b in GLYCEROL_BONDS:
-        top.addBond(atoms[a], atoms[b])
+    add_named_atoms_and_bonds(res, GLYCEROL_ATOMS, GLYCEROL_BONDS)
     dx, dy, dz = origin
     return [(x + dx, y + dy, z + dz) for x, y, z in GLYCEROL_XYZ]
 
